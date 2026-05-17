@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon"
+	"github.com/multica-ai/multica/server/internal/daemon/github"
 	logger_pkg "github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/util"
 )
@@ -70,6 +72,13 @@ var daemonDiskUsageCmd = &cobra.Command{
 	RunE: runDaemonDiskUsage,
 }
 
+var daemonGithubCmd = &cobra.Command{
+	Use:   "github",
+	Short: "Run daemon in GitHub Issues mode (zero backend dependencies)",
+	Long:  "Starts the daemon that monitors GitHub Issues with agent labels and executes AI agents locally. No Multica backend required.",
+	RunE:  runDaemonGithub,
+}
+
 func init() {
 	f := daemonStartCmd.Flags()
 	f.Bool("foreground", false, "Run in the foreground instead of background")
@@ -110,12 +119,18 @@ func init() {
 	df.String("output", "table", "Output format: table or json")
 	df.String("workspaces-root", "", "Override the workspaces root path (default: same as the daemon)")
 
+	gf := daemonGithubCmd.Flags()
+	gf.String("config", "", "Path to config file (default: ~/.multica/config.yaml)")
+	gf.String("repo", "", "Override repos (comma-separated)")
+	gf.Bool("foreground", false, "Run in the foreground instead of background")
+
 	daemonCmd.AddCommand(daemonStartCmd)
 	daemonCmd.AddCommand(daemonStopCmd)
 	daemonCmd.AddCommand(daemonRestartCmd)
 	daemonCmd.AddCommand(daemonStatusCmd)
 	daemonCmd.AddCommand(daemonLogsCmd)
 	daemonCmd.AddCommand(daemonDiskUsageCmd)
+	daemonCmd.AddCommand(daemonGithubCmd)
 }
 
 // daemonDirForProfile returns the state directory for the given profile.
@@ -676,6 +691,113 @@ func runDaemonDiskUsage(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// --- daemon github ---
+
+func runDaemonGithub(cmd *cobra.Command, _ []string) error {
+	foreground, _ := cmd.Flags().GetBool("foreground")
+	_ = foreground // GitHub mode always runs in foreground; flag exists for common-interface compatibility
+
+	// 1. Resolve config path (flag or default ~/.multica/config.yaml).
+	cfgPath, _ := cmd.Flags().GetString("config")
+	if cfgPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("resolve home directory: %w", err)
+		}
+		cfgPath = filepath.Join(home, ".multica", "config.yaml")
+	}
+
+	// 2. Load GitHub config.
+	ghCfg, err := github.LoadConfig(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load github config: %w", err)
+	}
+
+	// 3. Apply --repo override (comma-separated list).
+	if repoFlag, _ := cmd.Flags().GetString("repo"); repoFlag != "" {
+		ghCfg.Repos = strings.Split(repoFlag, ",")
+	}
+
+	// 4. Initialize logger.
+	logger := logger_pkg.NewLogger("daemon-github")
+
+	// 5. Probe available agent CLIs via daemon.LoadConfig.
+	dcfg, err := daemon.LoadConfig(daemon.Overrides{})
+	if err != nil {
+		return fmt.Errorf("load daemon config: %w", err)
+	}
+
+	// Merge ghCfg agents with probed agent entries.
+	// Each GitHub agent has a provider field (e.g. "claude", "codex") that maps to
+	// a probed AgentEntry. Re-key the agents map by agent name (label) so the
+	// daemon can look up the correct binary for each agent.
+	agents := make(map[string]daemon.AgentEntry, len(ghCfg.Agents))
+	ghAgentConfigs := make(map[string]daemon.GHModeAgentConfig, len(ghCfg.Agents))
+	for name, acfg := range ghCfg.Agents {
+		entry, ok := dcfg.Agents[acfg.Provider]
+		if !ok {
+			return fmt.Errorf("agent %q: provider %q not found on PATH", name, acfg.Provider)
+		}
+		// Per-agent model override takes precedence.
+		if acfg.Model != "" {
+			entry.Model = acfg.Model
+		}
+		agents[name] = entry
+
+		ghAgentConfigs[name] = daemon.GHModeAgentConfig{
+			Provider:     acfg.Provider,
+			Model:        acfg.Model,
+			Role:         acfg.Role,
+			Instructions: acfg.Instructions,
+			AllowedRepos: acfg.AllowedRepos,
+		}
+	}
+	dcfg.Agents = agents
+
+	// Build the GitHub mode config for the daemon.
+	ghModeCfg := daemon.GHModeConfig{
+		Token:           ghCfg.Token,
+		Repos:           ghCfg.Repos,
+		AgentConfigs:    ghAgentConfigs,
+		PollInterval:    ghCfg.Daemon.PollInterval,
+		MaxConcurrent:   ghCfg.Daemon.MaxConcurrent,
+		OrphanTimeout:   ghCfg.Daemon.OrphanTimeout,
+		CommentMaxChars: ghCfg.Daemon.CommentMaxChars,
+	}
+
+	// 6. Create Daemon instance.
+	d := daemon.New(dcfg, logger)
+
+	// 7. Set up signal handling for graceful shutdown.
+	ctx, stop := notifyShutdownContext(context.Background())
+	defer stop()
+
+	// 8. Run GitHub mode.
+	cfgDir := filepath.Dir(cfgPath)
+	if err := d.RunGitHubMode(ctx, ghModeCfg, cfgDir,
+		// newDiscoverer wraps github.NewDiscoverer to return a GitHubDiscoverer.
+		func(token, owner, repo string, logger *slog.Logger) daemon.GitHubDiscoverer {
+			return &ghDiscovererAdapter{disc: github.NewDiscoverer(token, owner, repo, logger)}
+		},
+		// newReporter wraps github.NewReporter to return a GitHubReporter.
+		func(token, owner, repo string, maxBody int, logger *slog.Logger) daemon.GitHubReporter {
+			return &ghReporterAdapter{rep: github.NewReporter(token, owner, repo, maxBody, logger)}
+		},
+		// filterIssues converts, filters, and converts back.
+		func(issues []daemon.GitHubIssue, agentName string) []daemon.GitHubIssue {
+			return ghFilterIssues(issues, agentName)
+		},
+		// mapIssueToTask converts config and issue types then calls github.MapIssueToTask.
+		func(issue daemon.GitHubIssue, agentName string, cfg daemon.GHModeConfig, cfgDir string) daemon.Task {
+			return ghMapIssueToTask(issue, agentName, cfg, cfgDir)
+		},
+	); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+
+	return nil
+}
+
 func printDiskUsageTaskTable(w io.Writer, report daemon.DiskUsageReport) {
 	fmt.Fprintf(w, "Workspaces root: %s\n", report.WorkspacesRoot)
 	if report.TotalTaskCount == 0 {
@@ -801,4 +923,111 @@ func formatAge(seconds int64) string {
 	default:
 		return fmt.Sprintf("%ds", seconds)
 	}
+}
+
+// ghDiscovererAdapter wraps github.Discoverer to implement daemon.GitHubDiscoverer.
+type ghDiscovererAdapter struct {
+	disc *github.Discoverer
+}
+
+func (a *ghDiscovererAdapter) FetchOpenIssues(ctx context.Context, labelFilter string) ([]daemon.GitHubIssue, error) {
+	issues, err := a.disc.FetchOpenIssues(ctx, labelFilter)
+	if err != nil {
+		return nil, err
+	}
+	return ghIssuesToDaemon(issues), nil
+}
+
+// ghReporterAdapter wraps github.Reporter to implement daemon.GitHubReporter.
+type ghReporterAdapter struct {
+	rep *github.Reporter
+}
+
+func (a *ghReporterAdapter) ReportResult(ctx context.Context, issueNumber int, output string, success bool) error {
+	return a.rep.ReportResult(ctx, issueNumber, output, success)
+}
+
+func (a *ghReporterAdapter) PostClaimComment(ctx context.Context, issueNumber int, agentName string) error {
+	return a.rep.PostClaimComment(ctx, issueNumber, agentName)
+}
+
+// ghIssuesToDaemon converts a slice of github.Issue to daemon.GitHubIssue.
+func ghIssuesToDaemon(issues []github.Issue) []daemon.GitHubIssue {
+	result := make([]daemon.GitHubIssue, len(issues))
+	for i, iss := range issues {
+		labels := make([]daemon.GitHubLabel, len(iss.Labels))
+		for j, l := range iss.Labels {
+			labels[j] = daemon.GitHubLabel{Name: l.Name}
+		}
+		result[i] = daemon.GitHubIssue{
+			ID:       iss.ID,
+			Number:   iss.Number,
+			Title:    iss.Title,
+			Body:     iss.Body,
+			State:    iss.State,
+			URL:      iss.URL,
+			CloneURL: iss.Repo.CloneURL,
+			Labels:   labels,
+			User:     struct{ Login string }{Login: iss.User.Login},
+		}
+	}
+	return result
+}
+
+// ghIssuesFromDaemon converts a slice of daemon.GitHubIssue to github.Issue.
+func ghIssuesFromDaemon(issues []daemon.GitHubIssue) []github.Issue {
+	result := make([]github.Issue, len(issues))
+	for i, iss := range issues {
+		labels := make([]github.Label, len(iss.Labels))
+		for j, l := range iss.Labels {
+			labels[j] = github.Label{Name: l.Name}
+		}
+		result[i] = github.Issue{
+			ID:     iss.ID,
+			Number: iss.Number,
+			Title:  iss.Title,
+			Body:   iss.Body,
+			State:  iss.State,
+			URL:    iss.URL,
+			Labels: labels,
+			User:   struct{ Login string `json:"login"` }{Login: iss.User.Login},
+		}
+		result[i].Repo.CloneURL = iss.CloneURL
+	}
+	return result
+}
+
+// ghFilterIssues converts types, calls github.FilterIssues, and converts back.
+func ghFilterIssues(issues []daemon.GitHubIssue, agentName string) []daemon.GitHubIssue {
+	return ghIssuesToDaemon(github.FilterIssues(ghIssuesFromDaemon(issues), agentName))
+}
+
+// ghMapIssueToTask converts config and issue types, then delegates to github.MapIssueToTask.
+func ghMapIssueToTask(issue daemon.GitHubIssue, agentName string, cfg daemon.GHModeConfig, cfgDir string) daemon.Task {
+	// CloneURL from JSON is stamped in fetchOpenIssues via Repo.CloneURL.
+	ghIssue := ghIssuesFromDaemon([]daemon.GitHubIssue{issue})[0]
+
+	// Build a github.Config from the daemon.GHModeConfig.
+	ghCfg := &github.Config{
+		Token:  cfg.Token,
+		Repos:  cfg.Repos,
+		Agents: make(map[string]github.AgentConfig, len(cfg.AgentConfigs)),
+		Daemon: github.DaemonConfig{
+			PollInterval:    cfg.PollInterval,
+			MaxConcurrent:   cfg.MaxConcurrent,
+			OrphanTimeout:   cfg.OrphanTimeout,
+			CommentMaxChars: cfg.CommentMaxChars,
+		},
+	}
+	for name, acfg := range cfg.AgentConfigs {
+		ghCfg.Agents[name] = github.AgentConfig{
+			Provider:     acfg.Provider,
+			Model:        acfg.Model,
+			Role:         acfg.Role,
+			Instructions: acfg.Instructions,
+			AllowedRepos: acfg.AllowedRepos,
+		}
+	}
+
+	return github.MapIssueToTask(ghIssue, agentName, ghCfg, cfgDir)
 }

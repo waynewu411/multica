@@ -1,6 +1,9 @@
 package daemon
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // AgentEntry describes a single available agent CLI.
 type AgentEntry struct {
@@ -120,4 +123,25 @@ type TaskResult struct {
 	EnvRoot       string           `json:"-"`                    // env root dir for writing GC metadata (not sent to server)
 	FailureReason string           `json:"-"`                    // classifier forwarded to FailTask on the blocked path; empty falls back to 'agent_error'
 	Usage         []TaskUsageEntry `json:"usage,omitempty"`      // per-model token usage
+}
+
+// GHModeConfig holds configuration for running the daemon in GitHub Issues mode.
+// It is populated by the CLI from the github config file and daemon agent probing.
+type GHModeConfig struct {
+	Token           string
+	Repos           []string
+	AgentConfigs    map[string]GHModeAgentConfig // keyed by agent name (label)
+	PollInterval    time.Duration
+	MaxConcurrent   int
+	OrphanTimeout   time.Duration
+	CommentMaxChars int
+}
+
+// GHModeAgentConfig holds per-agent configuration for GitHub Issues mode.
+type GHModeAgentConfig struct {
+	Provider     string   // e.g. "claude", "codex" — used to look up AgentEntry key
+	Model        string   // model override
+	Role         string   // agent role description
+	Instructions string   // agent instructions
+	AllowedRepos []string // repos this agent is allowed to work on
 }

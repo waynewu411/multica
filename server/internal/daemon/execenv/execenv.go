@@ -48,6 +48,7 @@ type TaskContextForEnv struct {
 	AgentID                 string // unique ID of the dispatched agent
 	AgentName               string
 	AgentInstructions       string // agent identity/persona instructions, injected into CLAUDE.md
+	AgentInstructionsPath   string // absolute path to AGENTS.md for @include directives (Claude only)
 	AgentSkills             []SkillContextForEnv
 	Repos                   []RepoContextForEnv     // workspace repos available for checkout
 	ProjectID               string                  // issue's project, when present

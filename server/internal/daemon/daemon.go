@@ -40,6 +40,34 @@ func (f taskRunnerFunc) run(ctx context.Context, task Task, provider string, slo
 	return f(ctx, task, provider, slot, log)
 }
 
+// gitHubIssue mirrors github.Issue for use in GitHub Issues mode.
+type GitHubIssue struct {
+	ID      int64
+	Number  int
+	Title   string
+	Body    string
+	State   string
+	URL     string
+	CloneURL string
+	Labels  []GitHubLabel
+	User    struct{ Login string }
+}
+
+type GitHubLabel struct {
+	Name string
+}
+
+// GitHubDiscoverer is the interface for GitHub Issues polling.
+type GitHubDiscoverer interface {
+	FetchOpenIssues(ctx context.Context, labelFilter string) ([]GitHubIssue, error)
+}
+
+// GitHubReporter is the interface for posting results back to GitHub Issues.
+type GitHubReporter interface {
+	ReportResult(ctx context.Context, issueNumber int, output string, success bool) error
+	PostClaimComment(ctx context.Context, issueNumber int, agentName string) error
+}
+
 var (
 	isBrewInstall        = cli.IsBrewInstall
 	getBrewPrefix        = cli.GetBrewPrefix
@@ -569,8 +597,11 @@ func (d *Daemon) clearWSHeartbeatAcks() {
 	d.wsHBMu.Unlock()
 }
 
-// Run starts the daemon: resolves auth, registers runtimes, then polls for tasks.
-func (d *Daemon) Run(ctx context.Context) error {
+// runDaemon runs the daemon lifecycle with mode-specific startup, shutdown, and
+// main loop callbacks. The common skeleton handles health server, logging, GC,
+// auto-update, and graceful shutdown; the callbacks provide the backend- or
+// GitHub-specific behavior.
+func (d *Daemon) runDaemon(ctx context.Context, mainLoop func(context.Context, chan struct{}) error, startup func(context.Context) error, shutdown func()) error {
 	// Wrap context so handleUpdate can cancel the daemon for restart.
 	ctx, cancel := context.WithCancel(ctx)
 	d.cancelFunc = cancel
@@ -606,38 +637,56 @@ func (d *Daemon) Run(ctx context.Context) error {
 		"launched_by", d.cfg.LaunchedBy,
 	)
 
-	// Load auth token from CLI config.
-	if err := d.resolveAuth(); err != nil {
+	if err := startup(ctx); err != nil {
 		return err
 	}
 
-	// Fetch all user workspaces from the API and register runtimes for any
-	// that exist. Zero workspaces is a valid state — a newly-signed-up user
-	// may start the daemon before creating their first workspace. The
-	// workspaceSyncLoop below polls every 30s and will register runtimes
-	// when a workspace appears, so the daemon stays useful as a long-lived
-	// background process rather than crashing at startup.
-	if err := d.syncWorkspacesFromAPI(ctx); err != nil {
-		return err
+	if shutdown != nil {
+		defer shutdown()
 	}
 
-	// Deregister runtimes on shutdown (uses a fresh context since ctx will be cancelled).
-	defer d.deregisterRuntimes()
-
-	// Start workspace sync loop to discover newly created workspaces.
-	go d.workspaceSyncLoop(ctx)
-
-	taskWakeups := make(chan struct{}, 1)
-	go d.taskWakeupLoop(ctx, taskWakeups)
-	go d.heartbeatLoop(ctx)
 	go d.gcLoop(ctx)
 	go d.autoUpdateLoop(ctx)
+
+	taskWakeups := make(chan struct{}, 1)
 	go d.serveHealth(ctx, healthLn, time.Now())
-	d.logger.Debug("background loops launched (workspace-sync, task-wakeup, heartbeat, gc, auto-update, health)")
-	err = d.pollLoop(ctx, taskWakeups)
+	d.logger.Debug("background loops launched (gc, auto-update, health)")
+
+	err = mainLoop(ctx, taskWakeups)
 	d.logger.Debug("daemon main loop returning", "error", err)
 	return err
 }
+
+// Run starts the daemon in backend mode: resolves auth, registers runtimes,
+// then polls for tasks via the Multica API.
+func (d *Daemon) Run(ctx context.Context) error {
+	return d.runDaemon(ctx, func(ctx context.Context, taskWakeups chan struct{}) error {
+		go d.taskWakeupLoop(ctx, taskWakeups)
+		go d.heartbeatLoop(ctx)
+		return d.pollLoop(ctx, taskWakeups)
+	}, func(ctx context.Context) error {
+		// Load auth token from CLI config.
+		if err := d.resolveAuth(); err != nil {
+			return err
+		}
+
+		// Fetch all user workspaces from the API and register runtimes for any
+		// that exist. Zero workspaces is a valid state — a newly-signed-up user
+		// may start the daemon before creating their first workspace. The
+		// workspaceSyncLoop below polls every 30s and will register runtimes
+		// when a workspace appears, so the daemon stays useful as a long-lived
+		// background process rather than crashing at startup.
+		if err := d.syncWorkspacesFromAPI(ctx); err != nil {
+			return err
+		}
+
+		// Start workspace sync loop to discover newly created workspaces.
+		go d.workspaceSyncLoop(ctx)
+		return nil
+	}, d.deregisterRuntimes)
+}
+
+
 
 // RestartBinary returns the path to the new binary if the daemon needs to restart
 // after a successful update, or empty string if no restart is needed.
@@ -3164,4 +3213,155 @@ func defaultArgsForProvider(cfg Config, provider string) []string {
 		return nil
 	}
 	return append([]string(nil), args...)
+}
+
+// RunGitHubMode starts the daemon in GitHub Issues mode. It polls configured
+// GitHub repos for issues with agent labels, executes AI agents locally, and
+// reports results back to GitHub issues. Does not require a Multica backend.
+//
+// The factory parameters bridge to the daemon/github package, avoiding an
+// import cycle (daemon/github/mapper.go imports daemon for Task types).
+func (d *Daemon) RunGitHubMode(
+	ctx context.Context,
+	ghCfg GHModeConfig,
+	cfgDir string,
+	newDiscoverer func(token, owner, repo string, logger *slog.Logger) GitHubDiscoverer,
+	newReporter func(token, owner, repo string, maxBody int, logger *slog.Logger) GitHubReporter,
+	filterIssues func(issues []GitHubIssue, agentName string) []GitHubIssue,
+	mapIssueToTask func(issue GitHubIssue, agentName string, cfg GHModeConfig, cfgDir string) Task,
+) error {
+	return d.runDaemon(ctx, func(ctx context.Context, taskWakeups chan struct{}) error {
+		return d.githubPollLoop(ctx, ghCfg, cfgDir, newDiscoverer, newReporter, filterIssues, mapIssueToTask)
+	}, func(ctx context.Context) error {
+		// Register pseudo-runtimes for each GitHub agent so the task execution
+		// pipeline (runTask) can look up the provider from d.runtimeIndex.
+		d.mu.Lock()
+		for name, ag := range ghCfg.AgentConfigs {
+			provider := ag.Provider
+			if provider == "" {
+				provider = "claude"
+			}
+			rid := "gh/" + name
+			d.runtimeIndex[rid] = Runtime{
+				ID:       rid,
+				Name:     name,
+				Provider: provider,
+				Status:   "registered",
+			}
+		}
+		d.mu.Unlock()
+		return nil
+	}, nil)
+}
+
+// githubPollLoop is the main loop for GitHub Issues mode. It periodically polls
+// configured repos for open issues, maps them to daemon Tasks, and runs them
+// through the shared agent execution pipeline.
+func (d *Daemon) githubPollLoop(
+	ctx context.Context,
+	ghCfg GHModeConfig,
+	cfgDir string,
+	newDiscoverer func(token, owner, repo string, logger *slog.Logger) GitHubDiscoverer,
+	newReporter func(token, owner, repo string, maxBody int, logger *slog.Logger) GitHubReporter,
+	filterIssues func(issues []GitHubIssue, agentName string) []GitHubIssue,
+	mapIssueToTask func(issue GitHubIssue, agentName string, cfg GHModeConfig, cfgDir string) Task,
+) error {
+	sem := newTaskSlotSemaphore(ghCfg.MaxConcurrent)
+
+	// Parse repo references into owner/name pairs up front.
+	type repoKey struct{ owner, name string }
+	var repos []repoKey
+	for _, r := range ghCfg.Repos {
+		parts := strings.SplitN(r, "/", 2)
+		if len(parts) != 2 {
+			d.logger.Warn("invalid repo format in github config, skipping", "repo", r)
+			continue
+		}
+		repos = append(repos, repoKey{owner: parts[0], name: parts[1]})
+	}
+	if len(repos) == 0 {
+		return fmt.Errorf("no valid repos configured for github mode")
+	}
+	d.logger.Info("github mode poll loop started", "repos", len(repos), "agents", len(ghCfg.AgentConfigs), "poll_interval", ghCfg.PollInterval)
+
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		for agentName := range ghCfg.AgentConfigs {
+			for _, rk := range repos {
+				disc := newDiscoverer(ghCfg.Token, rk.owner, rk.name, d.logger)
+				issues, err := disc.FetchOpenIssues(ctx, "agent:"+agentName)
+				if err != nil {
+					d.logger.Error("github fetch failed",
+						"repo", rk.owner+"/"+rk.name,
+						"agent", agentName,
+						"error", err)
+					continue
+				}
+
+				filtered := filterIssues(issues, agentName)
+				if len(filtered) == 0 {
+					continue
+				}
+
+				for _, iss := range filtered {
+					task := mapIssueToTask(iss, agentName, ghCfg, cfgDir)
+					task.RuntimeID = "gh/" + agentName
+					task.WorkspaceID = "github/" + rk.owner + "/" + rk.name
+
+					// Acquire execution slot.
+					var slot int
+					select {
+					case slot = <-sem:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+
+					rpt := newReporter(ghCfg.Token, rk.owner, rk.name, ghCfg.CommentMaxChars, d.logger)
+					ag := ghCfg.AgentConfigs[agentName]
+
+					go func(t Task, issNum int, rpt GitHubReporter, sl int, provider string) {
+						defer func() { sem <- sl }()
+
+						// Post a "working on this" comment to signal claim.
+						if err := rpt.PostClaimComment(ctx, issNum, agentName); err != nil {
+							d.logger.Warn("github claim comment failed", "issue", issNum, "error", err)
+						}
+
+						// Run the agent task via the shared execution pipeline.
+						// We bypass handleTask because it requires Multica API
+						// lifecycle calls (StartTask/CompleteTask) which are not
+						// available in GitHub mode. The core execution
+						// (d.runner.run -> runTask) is unchanged.
+						taskLog := d.logger.With("task", shortID(t.ID))
+						result, err := d.runner.run(ctx, t, provider, sl, taskLog)
+						if err != nil {
+							d.logger.Error("github task execution failed", "issue", issNum, "error", err)
+							if rptErr := rpt.ReportResult(ctx, issNum, err.Error(), false); rptErr != nil {
+								d.logger.Warn("github report failure failed", "issue", issNum, "error", rptErr)
+							}
+							return
+						}
+
+						success := result.Status == "completed"
+						output := result.Comment
+						if output == "" {
+							output = result.Status
+						}
+						if err := rpt.ReportResult(ctx, issNum, output, success); err != nil {
+							d.logger.Warn("github report result failed", "issue", issNum, "error", err)
+						}
+					}(task, iss.Number, rpt, slot, ag.Provider)
+				}
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(ghCfg.PollInterval):
+		}
+	}
 }
