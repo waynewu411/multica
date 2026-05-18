@@ -138,7 +138,8 @@ type Daemon struct {
 	rootCtx       context.Context    // set by Run(); used by long-running recoveries that must survive per-runtime ctx cancellation
 	restartBinary string             // non-empty after a successful update; path to the new binary
 	updating      atomic.Bool        // prevents concurrent update attempts
-	activeTasks   atomic.Int64       // number of tasks currently in handleTask; exposed via /health
+	activeTasks      atomic.Int64       // number of tasks currently in handleTask; exposed via /health
+	reportToBackend  bool               // false skips backend progress/message reporting (e.g. GitHub mode)
 
 	// claimMu guards pauseClaims and claimsInFlight. It is held only for the
 	// microseconds it takes to make a decision; ClaimTask itself runs without
@@ -196,6 +197,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		reregisterNextAttempt:     make(map[string]time.Time),
 		reregisterLastCompletedAt: make(map[string]time.Time),
 		cancelPollInterval:        5 * time.Second,
+		reportToBackend:           true,
 	}
 	d.runner = taskRunnerFunc(d.runTask)
 	d.runUpdateFn = d.runUpdate
@@ -2769,7 +2771,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			batch = nil
 			mu.Unlock()
 
-			if len(toSend) > 0 {
+			if len(toSend) > 0 && d.reportToBackend {
 				sendCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				if err := d.client.ReportTaskMessages(sendCtx, taskID, toSend); err != nil {
 					taskLog.Debug("failed to report task messages", "error", err)
@@ -2818,10 +2820,12 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 						sid := msg.SessionID
 						wd := opts.Cwd
 						go func() {
-							pinCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-							defer cancel()
-							if err := d.client.PinTaskSession(pinCtx, taskID, sid, wd); err != nil {
-								taskLog.Debug("pin session failed", "error", err)
+							if d.reportToBackend {
+								pinCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+								defer cancel()
+								if err := d.client.PinTaskSession(pinCtx, taskID, sid, wd); err != nil {
+									taskLog.Debug("pin session failed", "error", err)
+								}
 							}
 						}()
 					}
@@ -3230,6 +3234,7 @@ func (d *Daemon) RunGitHubMode(
 	filterIssues func(issues []GitHubIssue, agentName string) []GitHubIssue,
 	mapIssueToTask func(issue GitHubIssue, agentName string, cfg GHModeConfig, cfgDir string) Task,
 ) error {
+	d.reportToBackend = false
 	return d.runDaemon(ctx, func(ctx context.Context, taskWakeups chan struct{}) error {
 		return d.githubPollLoop(ctx, ghCfg, cfgDir, newDiscoverer, newReporter, filterIssues, mapIssueToTask)
 	}, func(ctx context.Context) error {
