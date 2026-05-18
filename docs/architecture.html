@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multica Architecture Overview</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-secondary: #f8f9fa;
+    --text: #1a1a2e;
+    --text-muted: #6b7280;
+    --border: #e5e7eb;
+    --accent: #7c3aed;
+    --accent-light: #ede9fe;
+    --code-bg: #f1f5f9;
+    --warning-bg: #fffbeb;
+    --warning-border: #fbbf24;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a;
+      --bg-secondary: #1e293b;
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --border: #334155;
+      --accent: #a78bfa;
+      --accent-light: #1e1b4b;
+      --code-bg: #1e293b;
+      --warning-bg: #451a03;
+      --warning-border: #d97706;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 6rem;
+  }
+  h1 { font-size: 2.25rem; margin-bottom: 0.25rem; letter-spacing: -0.02em; }
+  h2 {
+    font-size: 1.5rem;
+    margin-top: 3rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 2px solid var(--border);
+    letter-spacing: -0.01em;
+  }
+  h3 { font-size: 1.15rem; margin-top: 2rem; margin-bottom: 0.5rem; }
+  p { margin-bottom: 1rem; }
+  .subtitle { color: var(--text-muted); font-size: 1.1rem; margin-bottom: 2rem; }
+
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; }
+  th, td { padding: 0.6rem 0.8rem; text-align: left; border-bottom: 1px solid var(--border); }
+  th { font-weight: 600; background: var(--bg-secondary); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  td { font-size: 0.95rem; }
+  tr:last-child td { border-bottom: none; }
+
+  code {
+    font-family: "SF Mono", "Fira Code", "Fira Mono", Menlo, monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    padding: 0.15em 0.4em;
+    border-radius: 4px;
+  }
+  pre {
+    background: var(--code-bg);
+    padding: 1rem 1.2rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 1rem 0 1.5rem;
+    font-size: 0.88rem;
+    line-height: 1.6;
+    border: 1px solid var(--border);
+  }
+  pre code { background: none; padding: 0; }
+
+  ul, ol { margin: 0.5rem 0 1rem 1.5rem; }
+  li { margin-bottom: 0.35rem; }
+
+  .callout {
+    border-left: 4px solid var(--accent);
+    background: var(--accent-light);
+    padding: 0.8rem 1rem;
+    border-radius: 0 6px 6px 0;
+    margin: 1.5rem 0;
+    font-size: 0.95rem;
+  }
+  .callout strong { color: var(--accent); }
+
+  .flow-step {
+    display: grid;
+    grid-template-columns: 2rem 1fr;
+    gap: 0.6rem 1rem;
+    margin-bottom: 0.9rem;
+    align-items: start;
+  }
+  .flow-step .num {
+    background: var(--accent);
+    color: #fff;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.85rem;
+    flex-shrink: 0;
+  }
+  .flow-step .label { font-weight: 600; font-size: 0.9rem; }
+  .flow-step .detail { color: var(--text-muted); font-size: 0.88rem; grid-column: 2; }
+
+  .toc { background: var(--bg-secondary); padding: 1.2rem 1.5rem; border-radius: 8px; margin: 2rem 0; }
+  .toc h3 { margin-top: 0; }
+  .toc ol { margin-bottom: 0; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+</style>
+</head>
+<body>
+
+<h1>Multica Architecture</h1>
+<p class="subtitle">An AI-native task management platform — like Linear, but with AI agents as first-class citizens.</p>
+
+<div class="toc">
+  <h3>Contents</h3>
+  <ol>
+    <li><a href="#overview">Overall Architecture</a></li>
+    <li><a href="#backend">Backend (Go)</a></li>
+    <li><a href="#event-system">Event System</a></li>
+    <li><a href="#realtime">Real-Time System</a></li>
+    <li><a href="#daemon">Daemon — Local Agent Runtime</a></li>
+    <li><a href="#frontend-architecture">Frontend Architecture</a></li>
+    <li><a href="#state-management">State Management</a></li>
+    <li><a href="#request-flow">End-to-End Request Flow</a></li>
+    <li><a href="#database">Database</a></li>
+    <li><a href="#infrastructure">Infrastructure</a></li>
+  </ol>
+</div>
+
+<h2 id="overview">1. Overall Architecture</h2>
+
+<p>Multica is a monorepo combining a <strong>Go backend</strong> with a <strong>TypeScript frontend</strong> (pnpm workspaces + Turborepo). It also ships an <strong>Electron desktop app</strong> that shares nearly all code with the web app.</p>
+
+<pre><code>multica/
+├── server/               # Go backend (Chi router, sqlc, gorilla/websocket, Redis)
+├── apps/
+│   ├── web/              # Next.js App Router (web app)
+│   ├── desktop/          # Electron desktop app
+│   └── docs/             # Documentation site
+├── packages/
+│   ├── core/             # Headless business logic (stores, API client, TanStack Query hooks)
+│   ├── views/            # Shared page-level components (zero next/* imports)
+│   ├── ui/               # Atomic UI component library (shadcn/ui + Base UI primitives)
+│   └── tsconfig/         # Shared TypeScript configuration
+├── e2e/                  # Playwright E2E tests
+└── scripts/              # Development scripts</code></pre>
+
+<h3>Key Architectural Decisions</h3>
+
+<ul>
+  <li><strong>Internal Packages pattern</strong> — shared packages export raw <code>.ts</code>/<code>.tsx</code> files (no pre-compilation). The consuming app's bundler compiles them directly, giving zero-config HMR and instant go-to-definition.</li>
+  <li><strong>Dependency direction</strong>: <code>views/ → core/ + ui/</code>. Core and UI are independent of each other.</li>
+  <li><strong>Platform bridge</strong>: <code>packages/core/platform/CoreProvider</code> initializes the API client, auth/workspace stores, WebSocket connection, and QueryClient. Each app wraps its root with <code>&lt;CoreProvider&gt;</code>.</li>
+</ul>
+
+<h2 id="backend">2. Backend (Go)</h2>
+
+<p>The backend is a monolith built on <strong>Chi router</strong> with <strong>PostgreSQL</strong> (pgx driver) and <strong>gorilla/websocket</strong>.</p>
+
+<h3>Entry Point — <code>server/cmd/server/main.go</code></h3>
+
+<p>On startup, the server:</p>
+<ol>
+  <li>Connects to PostgreSQL via a <code>pgxpool.Pool</code></li>
+  <li>Creates the core trio: <code>events.Bus</code> (in-process pub/sub), <code>realtime.Hub</code> (WebSocket rooms), <code>daemonws.Hub</code> (daemon WS)</li>
+  <li>Optionally creates Redis relay clients (when <code>REDIS_URL</code> is set) for multi-node fanout</li>
+  <li>Constructs the Chi router, injecting all dependencies</li>
+  <li>Registers event bus listeners: broadcast → activity → notification → subscriber → autopilot</li>
+  <li>Starts background workers: runtime sweeper, heartbeat scheduler, autopilot scheduler, failure monitor</li>
+  <li>Performs graceful shutdown via context cancellation</li>
+</ol>
+
+<h3>Route Structure — <code>server/cmd/server/router.go</code></h3>
+
+<table>
+  <thead>
+    <tr><th>Route Group</th><th>Middleware</th><th>Purpose</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>/health</code>, <code>/readyz</code></td><td>None</td><td>Health & readiness checks</td></tr>
+    <tr><td><code>/ws</code></td><td>None</td><td>WebSocket upgrade (JWT or PAT auth)</td></tr>
+    <tr><td><code>POST /auth/*</code></td><td>None</td><td>Email codes, Google OAuth, logout</td></tr>
+    <tr><td><code>GET /api/config</code></td><td>None</td><td>Public app configuration</td></tr>
+    <tr><td><code>/api/webhooks/github</code></td><td>None</td><td>GitHub App webhook (HMAC verified)</td></tr>
+    <tr><td><code>/api/daemon/*</code></td><td>DaemonAuth</td><td>Runtime registration, heartbeat, task claim/progress/complete</td></tr>
+    <tr><td><code>/api/*</code></td><td>Auth + RequireWorkspace</td><td>Protected CRUD: issues, agents, projects, chat, etc.</td></tr>
+  </tbody>
+</table>
+
+<h3>Middleware Chain</h3>
+<pre><code>RequestID → ClientMetadata → RequestLogger → Prometheus → Recoverer → CSP → CORS
+  → Auth (JWT/PAT validation) → RequireWorkspaceMember (DB membership check)</code></pre>
+
+<h3>Handler Layer — <code>server/internal/handler/</code></h3>
+<p>40+ handler files, all receiving a shared <code>Handler</code> struct that holds:</p>
+<ul>
+  <li><code>Queries</code> — sqlc-generated type-safe DB access</li>
+  <li><code>Hub</code> — realtime WebSocket hub for broadcasting events</li>
+  <li><code>Bus</code> — event bus for internal pub/sub</li>
+  <li><code>TaskService</code> — task lifecycle management</li>
+  <li><code>Storage</code> — S3 or local file storage</li>
+  <li><code>Analytics</code> — telemetry client</li>
+</ul>
+
+<h2 id="event-system">3. Event System</h2>
+
+<h3>Event Bus — <code>server/internal/events/bus.go</code></h3>
+
+<p>An in-process synchronous pub/sub bus. Handlers run in registration order; panics are recovered per-handler.</p>
+
+<pre><code>bus.Subscribe("issue:updated", handler)   // type-specific
+bus.SubscribeAll(handler)                  // global (receives ALL events)
+bus.Publish(Event{Type: "issue:updated", WorkspaceID: "...", Payload: {...}})</code></pre>
+
+<p>There are <strong>70+ event types</strong>: <code>issue:created</code>, <code>issue:updated</code>, <code>issue:deleted</code>, <code>comment:added</code>, <code>task:queued</code>, <code>task:dispatched</code>, <code>task:completed</code>, <code>task:failed</code>, <code>inbox:new</code>, <code>workspace:member_added</code>, <code>chat:message_added</code>, <code>autopilot:run_started</code>, and many more.</p>
+
+<h3>Listener Chain (registered in order)</h3>
+
+<ol>
+  <li><strong>Broadcaster Listener</strong> — routes events to the WebSocket layer. Workspace-scoped events broadcast to the workspace room; personal events (inbox, invitations) go via <code>SendToUser</code> to the specific recipient.</li>
+  <li><strong>Activity Listener</strong> — persists activity log entries to <code>activity_log</code> table for timeline display.</li>
+  <li><strong>Notification Listener</strong> — creates inbox items from events (mentions, status changes, assignments, comments). Respects notification preferences.</li>
+</ol>
+
+<h2 id="realtime">4. Real-Time System</h2>
+
+<h3>WebSocket Hub — <code>server/internal/realtime/hub.go</code></h3>
+
+<p>Scope-based room system. Clients connect via JWT or PAT and auto-subscribe to their workspace and user scopes. Additional scopes (task, chat) require authorization via <code>ScopeAuthorizer</code>.</p>
+
+<table>
+  <thead><tr><th>Scope</th><th>Pattern</th><th>Usage</th></tr></thead>
+  <tbody>
+    <tr><td>Workspace</td><td><code>workspace:{id}</code></td><td>All workspace-level events</td></tr>
+    <tr><td>User</td><td><code>user:{id}</code></td><td>Personal events (inbox, invitations)</td></tr>
+    <tr><td>Task</td><td><code>task:{id}</code></td><td>Live task progress streaming</td></tr>
+    <tr><td>Chat</td><td><code>chat:{id}</code></td><td>Chat session messages</td></tr>
+    <tr><td>DaemonRuntime</td><td><code>daemon:runtime:{id}</code></td><td>Daemon wakeup signals</td></tr>
+  </tbody>
+</table>
+
+<h3>Redis Relay (Multi-Node)</h3>
+
+<p>When <code>REDIS_URL</code> is set, the server enables cross-node fanout via Redis Streams:</p>
+<ul>
+  <li><strong>ShardedStreamRelay</strong> — shards streams by workspace ID for horizontal scaling</li>
+  <li><strong>DualWriteBroadcaster</strong> — writes to both the in-memory hub AND the Redis relay simultaneously</li>
+  <li>Supports legacy (single-stream), sharded, and dual (mirrored) modes for phased migration</li>
+</ul>
+
+<h3>Frontend WS Client — <code>packages/core/api/ws-client.ts</code></h3>
+<p>Browser WebSocket wrapper with automatic reconnect (3-second delay) and event subscription via <code>on(eventType, handler)</code>.</p>
+
+<h3>Frontend Realtime Sync — <code>packages/core/realtime/use-realtime-sync.ts</code></h3>
+<p><strong>Core pattern: WS events invalidate TanStack Query caches → refetch.</strong></p>
+<ul>
+  <li>Debounced prefix-based invalidation (100ms) for rapid-fire events</li>
+  <li>Specific handlers for granular cache updates (issues, inbox, comments, chat, tasks)</li>
+  <li>Chat task lifecycle writethrough: <code>task:queued</code> / <code>dispatch</code> / <code>message</code> / <code>completed</code> / <code>failed</code> all update the chat pending-task cache inline</li>
+</ul>
+
+<h2 id="daemon">5. Daemon — Local Agent Runtime</h2>
+
+<p>This is Multica's core innovation. The daemon runs on a user's local machine and executes AI agent tasks.</p>
+
+<h3>Architecture — <code>server/internal/daemon/daemon.go</code></h3>
+<ul>
+  <li>Manages per-workspace runtime state (runtime IDs, repo URLs, settings)</li>
+  <li>Uses a <code>taskRunner</code> interface to execute agent CLIs (Claude Code, Codex, Cursor, Gemini Code Assist)</li>
+  <li><code>execenv/</code> package manages execution environment: git repo cloning, worktrees, sandbox isolation</li>
+  <li><code>repocache/</code> handles local git repo caching</li>
+</ul>
+
+<h3>Task Lifecycle</h3>
+
+<div class="flow-step">
+  <div class="num">1</div>
+  <div class="label">User creates an issue with an agent assigned</div>
+  <div class="detail">Handler inserts a task row into <code>agent_task_queue</code></div>
+</div>
+<div class="flow-step">
+  <div class="num">2</div>
+  <div class="label">Server publishes <code>task:queued</code> event</div>
+  <div class="detail">TaskService notifies the daemon hub via <code>NotifyTaskAvailable</code></div>
+</div>
+<div class="flow-step">
+  <div class="num">3</div>
+  <div class="label">Daemon receives <code>daemon:task_available</code> frame</div>
+  <div class="detail">Sent over the persistent daemon WebSocket connection</div>
+</div>
+<div class="flow-step">
+  <div class="num">4</div>
+  <div class="label">Daemon claims the task</div>
+  <div class="detail"><code>POST /api/daemon/runtimes/{id}/tasks/claim</code></div>
+</div>
+<div class="flow-step">
+  <div class="num">5</div>
+  <div class="label">Server dispatches (<code>task:dispatch</code> event)</div>
+  <div class="detail">Daemon starts executing the agent locally in a sandboxed environment</div>
+</div>
+<div class="flow-step">
+  <div class="num">6</div>
+  <div class="label">Daemon streams progress</div>
+  <div class="detail"><code>POST /api/daemon/tasks/{id}/progress</code> and <code>/messages</code></div>
+</div>
+<div class="flow-step">
+  <div class="num">7</div>
+  <div class="label">Task completes</div>
+  <div class="detail"><code>POST /api/daemon/tasks/{id}/complete</code> → <code>task:completed</code> event</div>
+</div>
+<div class="flow-step">
+  <div class="num">8</div>
+  <div class="label">Frontend shows the result in real-time</div>
+  <div class="detail">Chat or issue detail renders the agent's output</div>
+</div>
+
+<h3>Daemon WebSocket — <code>server/internal/daemonws/hub.go</code></h3>
+<p>Separate from user WebSocket connections, indexed by <code>runtimeID</code>. Handles heartbeats and task wakeup notifications. Includes deduplication (LRU seen-IDs) and slow-client eviction.</p>
+
+<h2 id="frontend-architecture">6. Frontend Architecture</h2>
+
+<h3><code>packages/core/</code> — Shared Platform Layer</h3>
+
+<table>
+  <thead><tr><th>Module</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>api/client.ts</code></td><td>HTTP client: JWT/CSRF token management, Zod schema validation, auto 401 handling</td></tr>
+    <tr><td><code>api/ws-client.ts</code></td><td>WebSocket client with auto-reconnect and typed event subscription</td></tr>
+    <tr><td><code>realtime/</code></td><td>WS events → TanStack Query cache synchronization</td></tr>
+    <tr><td><code>platform/</code></td><td><code>CoreProvider</code>: initializes QueryClient, Auth, WS, i18n, and keyboard shortcuts</td></tr>
+    <tr><td><code>auth/</code></td><td>Zustand auth store, token lifecycle</td></tr>
+    <tr><td>Domain modules</td><td><code>issues/</code>, <code>agents/</code>, <code>chat/</code>, <code>inbox/</code>, <code>projects/</code>, <code>runtimes/</code>, <code>autopilots/</code>, etc. — each with TanStack Query hooks, mutations, and types</td></tr>
+  </tbody>
+</table>
+
+<h3><code>packages/views/</code> — Shared View Components</h3>
+<p>All page-level components live here: agents, auth, chat, dashboard, inbox, issues, settings, skills, squads, etc. These components have <strong>zero imports from <code>next/*</code> or <code>react-router-dom</code></strong> — routing is abstracted through <code>NavigationAdapter</code>.</p>
+
+<h3><code>packages/ui/</code> — UI Component Library</h3>
+<p>Based on shadcn/ui with Base UI primitives. Includes markdown rendering (TipTap editor, Mermaid diagrams), custom hooks (<code>use-auto-scroll</code>, <code>use-mobile</code>), and Tailwind CSS design tokens.</p>
+
+<h3><code>apps/web/</code> — Next.js Application</h3>
+<pre><code>app/
+├── (landing)/          # /, /about, /changelog, /download
+├── (auth)/             # /login, /onboarding, /invite/[id], /workspaces/new
+└── [workspaceSlug]/(dashboard)/
+    ├── issues/         # /:slug/issues, /:slug/issues/:id
+    ├── agents/         # /:slug/agents, /:slug/agents/:id
+    ├── inbox/          # /:slug/inbox
+    ├── projects/       # /:slug/projects
+    ├── settings/       # /:slug/settings
+    └── ...             # skills, squads, runtimes, autopilots, members, usage
+</code></pre>
+
+<h3><code>apps/desktop/</code> — Electron Application</h3>
+<p>Reuses all shared packages. Additional concerns:</p>
+<ul>
+  <li><strong>Tab isolation</strong>: tabs grouped per workspace; no cross-workspace tab leakage</li>
+  <li><strong>Transition flows</strong>: pre-workspace operations (create workspace, accept invite) are <code>WindowOverlay</code> state, not routes</li>
+  <li><strong>Error/stale states</strong>: auto-heal by dropping stale tab groups; no dedicated error pages</li>
+  <li><strong>Drag region</strong>: macOS title bar drag strip on all full-window views</li>
+</ul>
+
+<h2 id="state-management">7. State Management</h2>
+
+<div class="callout">
+  <strong>Architecture invariant:</strong> The system relies on a strict split between server state and client state. Mixing them is the most common way to break the architecture.
+</div>
+
+<table>
+  <thead><tr><th>Mechanism</th><th>Owns</th><th>Examples</th></tr></thead>
+  <tbody>
+    <tr><td><strong>TanStack Query</strong></td><td>All server state</td><td>Issues, users, workspaces, inbox, agents — anything fetched from the API</td></tr>
+    <tr><td><strong>Zustand</strong></td><td>All client state</td><td>UI selections, filters, drafts, modal state, navigation history</td></tr>
+    <tr><td><strong>React Context</strong></td><td>Cross-cutting platform plumbing</td><td><code>WorkspaceIdProvider</code>, <code>NavigationProvider</code></td></tr>
+  </tbody>
+</table>
+
+<h3>Hard Rules</h3>
+<ul>
+  <li><strong>Never duplicate server data into Zustand.</strong> If it came from the API, it belongs in the Query cache.</li>
+  <li><strong>Workspace-scoped queries must key on <code>wsId</code>.</strong> This makes workspace switching automatic — the cache key changes, the right data appears.</li>
+  <li><strong>Mutations are optimistic by default.</strong> Apply locally, send request, roll back on failure, invalidate on settle.</li>
+  <li><strong>WS events invalidate queries — they never write to stores directly.</strong> This keeps the cache as the single source of truth.</li>
+  <li><strong>API responses must be parsed, not cast.</strong> Use <code>parseWithFallback</code> with Zod schemas to survive response drift (critical for the installed desktop app).</li>
+</ul>
+
+<h2 id="request-flow">8. End-to-End Request Flow</h2>
+
+<p>Here is exactly how a user editing an issue flows through every layer:</p>
+
+<div class="flow-step">
+  <div class="num">1</div>
+  <div class="label">React component calls a TanStack Query mutation</div>
+  <div class="detail"><code>issues/mutations.ts</code> → <code>apiClient.updateIssue(id, data)</code></div>
+</div>
+<div class="flow-step">
+  <div class="num">2</div>
+  <div class="label">HTTP request sent</div>
+  <div class="detail"><code>PUT /api/issues/{id}</code> with <code>Authorization: Bearer &lt;token&gt;</code>, <code>X-Workspace-Slug</code>, CSRF token</div>
+</div>
+<div class="flow-step">
+  <div class="num">3</div>
+  <div class="label">Go middleware chain processes the request</div>
+  <div class="detail">RequestID → ClientMetadata → RequestLogger → CORS → Auth (validates JWT) → RequireWorkspaceMember (checks DB)</div>
+</div>
+<div class="flow-step">
+  <div class="num">4</div>
+  <div class="label">Handler validates input and updates PostgreSQL</div>
+  <div class="detail">sqlc-generated query writes to the <code>issues</code> table</div>
+</div>
+<div class="flow-step">
+  <div class="num">5</div>
+  <div class="label">Handler publishes <code>issue:updated</code> event to the Event Bus</div>
+  <div class="detail">Returns JSON response to the caller</div>
+</div>
+<div class="flow-step">
+  <div class="num">6</div>
+  <div class="label">Event Bus synchronously dispatches to listeners</div>
+  <div class="detail">
+    a) <strong>Activity Listener</strong> — records row in <code>activity_log</code><br>
+    b) <strong>Notification Listener</strong> — creates inbox entries for subscribers<br>
+    c) <strong>Broadcaster Listener</strong> — pushes to WebSocket hub
+  </div>
+</div>
+<div class="flow-step">
+  <div class="num">7</div>
+  <div class="label">Broadcaster writes to Hub + Redis relay (multi-node)</div>
+  <div class="detail"><code>DualWriteBroadcaster</code> fans out to all connected clients in the workspace room</div>
+</div>
+<div class="flow-step">
+  <div class="num">8</div>
+  <div class="label">Browser WebSocket receives the message</div>
+  <div class="detail"><code>onmessage</code> fires → <code>WSClient</code> dispatches to registered handlers</div>
+</div>
+<div class="flow-step">
+  <div class="num">9</div>
+  <div class="label">useRealtimeSync updates the TanStack Query cache</div>
+  <div class="detail">Specific handler calls <code>queryClient.setQueryData()</code>; fallback invalidates by event prefix (100ms debounced)</div>
+</div>
+<div class="flow-step">
+  <div class="num">10</div>
+  <div class="label">React re-renders with updated data</div>
+  <div class="detail">Components watching the affected query keys see the new state</div>
+</div>
+
+<h2 id="database">9. Database</h2>
+
+<p>PostgreSQL with the <code>pgx/v5</code> driver. <strong>sqlc</strong> generates type-safe Go code from SQL query files.</p>
+
+<table>
+  <thead><tr><th>Domain</th><th>Key Tables</th></tr></thead>
+  <tbody>
+    <tr><td>Identity & Access</td><td><code>users</code>, <code>workspaces</code>, <code>members</code>, <code>personal_access_tokens</code>, <code>verification_codes</code></td></tr>
+    <tr><td>Core Objects</td><td><code>issues</code>, <code>comments</code>, <code>projects</code>, <code>labels</code>, <code>issue_labels</code></td></tr>
+    <tr><td>Agents & Tasks</td><td><code>agents</code>, <code>agent_template</code>, <code>agent_task_queue</code>, <code>task_messages</code></td></tr>
+    <tr><td>Runtimes</td><td><code>runtimes</code>, <code>runtime_usage</code>, <code>task_usage</code>, <code>task_usage_daily</code></td></tr>
+    <tr><td>Collaboration</td><td><code>chat_sessions</code>, <code>chat_messages</code>, <code>skills</code>, <code>squads</code>, <code>squad_members</code></td></tr>
+    <tr><td>Automation</td><td><code>autopilots</code>, <code>autopilot_runs</code>, <code>autopilot_triggers</code></td></tr>
+    <tr><td>Activity & Feeds</td><td><code>activity_log</code>, <code>inbox</code>, <code>pins</code>, <code>subscribers</code></td></tr>
+    <tr><td>Infrastructure</td><td><code>invitations</code>, <code>reactions</code>, <code>issue_reactions</code>, <code>attachments</code>, <code>feedback</code></td></tr>
+  </tbody>
+</table>
+
+<h2 id="infrastructure">10. Infrastructure</h2>
+
+<table>
+  <thead><tr><th>Component</th><th>Technology</th></tr></thead>
+  <tbody>
+    <tr><td>Database</td><td>PostgreSQL (pgvector/pg17 image)</td></tr>
+    <tr><td>Cache / Message Bus</td><td>Redis (optional, for multi-node deployments)</td></tr>
+    <tr><td>File Storage</td><td>AWS S3 (primary) or local filesystem (fallback)</td></tr>
+    <tr><td>Email</td><td>Resend API or direct SMTP</td></tr>
+    <tr><td>Monitoring</td><td>Prometheus metrics endpoint + structured JSON logging (slog)</td></tr>
+    <tr><td>CI/CD</td><td>GitHub Actions (Node 22, Go 1.26.1)</td></tr>
+    <tr><td>Release</td><td>GoReleaser → GitHub Releases + Homebrew tap</td></tr>
+    <tr><td>Self-Hosting</td><td>Docker Compose (postgres + redis + backend + frontend)</td></tr>
+    <tr><td>E2E Testing</td><td>Playwright with <code>TestApiClient</code> fixture</td></tr>
+  </tbody>
+</table>
+
+<h3>Key Commands</h3>
+<pre><code>make dev              # One-command full-stack dev (auto-setup + start everything)
+make start            # Start backend + frontend
+make test             # Run Go tests
+pnpm test             # Run TypeScript tests (all packages via Turborepo)
+pnpm typecheck        # TypeScript type checking
+pnpm exec playwright test  # Run E2E tests
+make check            # Full verification pipeline (typecheck + TS tests + Go tests + E2E)</code></pre>
+
+</body>
+</html>

@@ -3315,6 +3315,7 @@ func (d *Daemon) githubPollLoop(
 					task := mapIssueToTask(iss, agentName, ghCfg, cfgDir)
 					task.RuntimeID = "gh/" + agentName
 					task.WorkspaceID = "github/" + rk.owner + "/" + rk.name
+					task.GitHubIssueURL = iss.URL
 
 					// Acquire execution slot.
 					var slot int

@@ -27,11 +27,32 @@ func BuildPrompt(task Task, provider string) string {
 	if task.QuickCreatePrompt != "" {
 		return buildQuickCreatePrompt(task)
 	}
+	if task.GitHubIssueURL != "" {
+		return buildGitHubPrompt(task)
+	}
 	var b strings.Builder
 	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
 	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then complete it.\n", task.IssueID)
 	fmt.Fprintf(&b, "If you need comment history, `multica issue comment list %s --output json` returns all comments for the issue (server caps at 2000). Pass `--since <RFC3339>` to fetch only comments newer than a known cursor.\n", task.IssueID)
+	return b.String()
+}
+
+// buildGitHubPrompt constructs a prompt for GitHub Issues mode.
+// In this mode there is no Multica backend — the agent uses `gh` CLI
+// and git/github directly.
+func buildGitHubPrompt(task Task) string {
+	var b strings.Builder
+	b.WriteString("You are running as a local coding agent in GitHub Issues mode.\n")
+	b.WriteString("There is NO Multica backend — do NOT use `multica` CLI commands.\n\n")
+	fmt.Fprintf(&b, "Issue: %s (%s)\n\n", task.IssueID, task.GitHubIssueURL)
+	b.WriteString("Workflow:\n")
+	b.WriteString("1. Use `gh issue view " + task.IssueID + " --repo <owner/repo> --comments` to read the issue and comment history.\n")
+	b.WriteString("2. Complete the task described in the issue.\n")
+	b.WriteString("3. Use `gh pr create --repo <owner/repo>` to open a Pull Request with your changes.\n")
+	b.WriteString("4. Use `gh issue comment " + task.IssueID + " --repo <owner/repo> --body \"...\"` to post a summary.\n")
+	b.WriteString("5. If you cannot complete the task, post a comment explaining why.\n\n")
+	b.WriteString("Do NOT call `multica` commands — they require a Multica backend which is not available.\n")
 	return b.String()
 }
 

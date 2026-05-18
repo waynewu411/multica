@@ -61,6 +61,7 @@ type Task struct {
 	AutopilotDescription    string          `json:"autopilot_description,omitempty"`     // autopilot description used as task prompt
 	AutopilotSource         string          `json:"autopilot_source,omitempty"`          // manual, schedule, webhook, or api
 	AutopilotTriggerPayload json.RawMessage `json:"autopilot_trigger_payload,omitempty"` // optional trigger payload for webhook/api runs
+	GitHubIssueURL          string          `json:"github_issue_url,omitempty"`           // non-empty for GitHub Issues mode: direct URL to the issue
 	QuickCreatePrompt       string          `json:"quick_create_prompt,omitempty"`       // user's natural-language input for quick-create tasks
 	SquadID                 string          `json:"squad_id,omitempty"`                  // when the picker was a squad, the squad's UUID; Agent is still the resolved leader
 	SquadName               string          `json:"squad_name,omitempty"`                // display name for the picker squad, used in prompt text
