@@ -743,6 +743,7 @@ func runDaemonGithub(cmd *cobra.Command, _ []string) error {
 			entry.Model = acfg.Model
 		}
 		agents[name] = entry
+		agents[acfg.Provider] = entry // also keep provider key for runTask lookup
 
 		ghAgentConfigs[name] = daemon.GHModeAgentConfig{
 			Provider:     acfg.Provider,
