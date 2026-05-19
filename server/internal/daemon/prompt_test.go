@@ -218,3 +218,72 @@ func TestBuildPromptNonSquadLeaderNoRule(t *testing.T) {
 		t.Errorf("buildCommentPrompt must NOT inject squad leader no_action rule for non-squad-leader agents, got:\n%s", out)
 	}
 }
+
+// TestBuildGitHubPromptContainsCloneStep verifies the GitHub-mode prompt
+// explicitly instructs the agent to clone the repo before reading source
+// files. The agent's working directory starts empty (see execenv.Prepare),
+// so without this step the agent would try to read non-existent files.
+func TestBuildGitHubPromptContainsCloneStep(t *testing.T) {
+	task := Task{
+		IssueID:        "MUL-42",
+		GitHubIssueURL: "https://github.com/waynewu411/multica/issues/42",
+	}
+	got := BuildPrompt(task, "claude")
+
+	mustContain := []string{
+		"GitHub Issues mode",
+		"do NOT use `multica` CLI commands",
+		"gh auth status",
+		"gh repo clone waynewu411/multica .",
+		"gh issue view https://github.com/waynewu411/multica/issues/42 --comments",
+		// PR creation must pin --repo to the same slug as the issue. gh's
+		// default on a fork checkout is the upstream parent — wrong target.
+		"gh pr create --repo waynewu411/multica",
+		"Closes https://github.com/waynewu411/multica/issues/42",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(got, s) {
+			t.Errorf("prompt missing %q\nprompt:\n%s", s, got)
+		}
+	}
+}
+
+// TestBuildGitHubPromptFallsBackWhenURLUnparsable covers the defensive path
+// where parseGitHubRepoSlug cannot extract owner/repo. The prompt must still
+// tell the agent to clone and to pin --repo on PR creation, just with a
+// placeholder instead of a concrete slug.
+func TestBuildGitHubPromptFallsBackWhenURLUnparsable(t *testing.T) {
+	task := Task{
+		IssueID:        "MUL-1",
+		GitHubIssueURL: "not-a-url",
+	}
+	got := BuildPrompt(task, "claude")
+	mustContain := []string{
+		"<owner>/<repo>",                          // clone fallback
+		"gh pr create --repo <owner>/<repo>",      // PR-target fallback (NOT bare `gh pr create`)
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(got, s) {
+			t.Errorf("prompt should contain %q on URL parse failure\nprompt:\n%s", s, got)
+		}
+	}
+}
+
+func TestParseGitHubRepoSlug(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"https://github.com/owner/repo/issues/1", "owner/repo"},
+		{"https://github.com/waynewu411/multica/issues/42", "waynewu411/multica"},
+		{"https://github.com/owner/repo", "owner/repo"},
+		{"not-a-url", ""},
+		{"", ""},
+		{"https://github.com/onlyone", ""},
+	}
+	for _, tt := range tests {
+		if got := parseGitHubRepoSlug(tt.in); got != tt.want {
+			t.Errorf("parseGitHubRepoSlug(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}

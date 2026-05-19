@@ -98,14 +98,10 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 			}
 			b.WriteString("\n\n")
 		}
-		if ctx.AgentInstructions != "" {
-			b.WriteString(ctx.AgentInstructions)
-			b.WriteString("\n\n")
-		}
-	} else if ctx.AgentInstructions != "" {
+		WriteAgentPersona(&b, provider, ctx.AgentInstructions, ctx.AgentInstructionsPath)
+	} else if ctx.AgentInstructions != "" || ctx.AgentInstructionsPath != "" {
 		b.WriteString("## Agent Identity\n\n")
-		b.WriteString(ctx.AgentInstructions)
-		b.WriteString("\n\n")
+		WriteAgentPersona(&b, provider, ctx.AgentInstructions, ctx.AgentInstructionsPath)
 	}
 
 	b.WriteString("## Available Commands\n\n")
@@ -342,4 +338,15 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 	}
 
 	return b.String()
+}
+
+// WriteAgentPersona writes the agent persona section to the runtime config.
+// For Claude Code, writes an @include reference. For other providers, writes inline content.
+func WriteAgentPersona(b *strings.Builder, provider string, instructions string, soulPath string) {
+	if soulPath != "" && provider == "claude" {
+		fmt.Fprintf(b, "@%s\n\n", soulPath)
+	} else if instructions != "" {
+		b.WriteString(instructions)
+		b.WriteString("\n\n")
+	}
 }

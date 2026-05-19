@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
@@ -27,12 +28,65 @@ func BuildPrompt(task Task, provider string) string {
 	if task.QuickCreatePrompt != "" {
 		return buildQuickCreatePrompt(task)
 	}
+	if task.GitHubIssueURL != "" {
+		return buildGitHubPrompt(task)
+	}
 	var b strings.Builder
 	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
 	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then complete it.\n", task.IssueID)
 	fmt.Fprintf(&b, "If you need comment history, `multica issue comment list %s --output json` returns all comments for the issue (server caps at 2000). Pass `--since <RFC3339>` to fetch only comments newer than a known cursor.\n", task.IssueID)
 	return b.String()
+}
+
+// buildGitHubPrompt constructs a prompt for GitHub Issues mode.
+// In this mode there is no Multica backend — the agent uses `gh` CLI
+// and git/github directly. The working directory starts EMPTY, so the
+// prompt must instruct the agent to clone the repo before reading any
+// source files.
+func buildGitHubPrompt(task Task) string {
+	var b strings.Builder
+	b.WriteString("You are running as a local coding agent in GitHub Issues mode.\n")
+	b.WriteString("There is NO Multica backend — do NOT use `multica` CLI commands.\n\n")
+	fmt.Fprintf(&b, "Issue: %s (%s)\n\n", task.IssueID, task.GitHubIssueURL)
+	b.WriteString("Workflow:\n")
+	b.WriteString("1. Run `gh auth status` first to verify you can access the repo.\n")
+	slug := parseGitHubRepoSlug(task.GitHubIssueURL)
+	if slug != "" {
+		fmt.Fprintf(&b, "2. Clone the repository into the current (empty) working directory: `gh repo clone %s .` (do NOT clone into a subdirectory).\n", slug)
+	} else {
+		b.WriteString("2. Clone the repository derived from the issue URL into the current (empty) working directory using `gh repo clone <owner>/<repo> .` (do NOT clone into a subdirectory).\n")
+	}
+	fmt.Fprintf(&b, "3. Run `gh issue view %s --comments` to read the issue and any existing comments.\n", task.GitHubIssueURL)
+	b.WriteString("4. Read the repo's CLAUDE.md, AGENTS.md, and relevant source files to understand the codebase.\n")
+	b.WriteString("5. Complete the task described in the issue — implement the fix or feature on a new branch.\n")
+	// Pin `gh pr create --repo <slug>` so the PR lands in the same repo the
+	// issue came from. gh's default behavior when run inside a fork checkout
+	// is to open the PR against the upstream parent repo, which is almost
+	// never what an agent operating on a fork wants and which usually fails
+	// the agent's permission check anyway.
+	if slug != "" {
+		fmt.Fprintf(&b, "6. Create a Pull Request explicitly targeting the same repo the issue is on: `gh pr create --repo %s --title \"...\" --body \"Closes %s\"`. Do NOT omit `--repo` — gh defaults to the upstream parent on a fork checkout, which is not where this issue lives.\n", slug, task.GitHubIssueURL)
+	} else {
+		fmt.Fprintf(&b, "6. Create a Pull Request explicitly targeting the same repo as the issue: `gh pr create --repo <owner>/<repo> --title \"...\" --body \"Closes %s\"`. Do NOT omit `--repo` — gh defaults to the upstream parent on a fork checkout, which is not where this issue lives.\n", task.GitHubIssueURL)
+	}
+	b.WriteString("7. Post a summary comment on the issue with what you did.\n")
+	b.WriteString("8. If you cannot complete the task, post a comment explaining why.\n")
+	return b.String()
+}
+
+// parseGitHubRepoSlug extracts "owner/repo" from an issue URL like
+// https://github.com/owner/repo/issues/42. Returns "" on parse failure.
+func parseGitHubRepoSlug(issueURL string) string {
+	u, err := url.Parse(issueURL)
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[0] + "/" + parts[1]
 }
 
 // buildQuickCreatePrompt constructs a prompt for quick-create tasks. The
