@@ -3291,6 +3291,25 @@ func (d *Daemon) githubPollLoop(
 	}
 	d.logger.Info("github mode poll loop started", "repos", len(repos), "agents", len(ghCfg.AgentConfigs), "poll_interval", ghCfg.PollInterval)
 
+	// Hoist Discoverer / Reporter creation out of the poll loop so the
+	// ETag conditional-request cache inside each Discoverer survives across
+	// poll cycles (the 304 fast path was unreachable when we re-created the
+	// instance every tick), and so the underlying http.Client / connection
+	// pool is shared rather than throwaway-allocated.
+	//
+	// Discoverer's ETag is per-labelFilter, so we key by (repo, agentName)
+	// because each agent uses its own "agent:<name>" filter. Reporter has
+	// no per-label state, so we key by repo only.
+	discoverers := make(map[string]GitHubDiscoverer, len(repos)*len(ghCfg.AgentConfigs))
+	reporters := make(map[string]GitHubReporter, len(repos))
+	for _, rk := range repos {
+		repoKey := rk.owner + "/" + rk.name
+		reporters[repoKey] = newReporter(ghCfg.Token, rk.owner, rk.name, ghCfg.CommentMaxChars, d.logger)
+		for agentName := range ghCfg.AgentConfigs {
+			discoverers[repoKey+"|"+agentName] = newDiscoverer(ghCfg.Token, rk.owner, rk.name, d.logger)
+		}
+	}
+
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -3299,15 +3318,16 @@ func (d *Daemon) githubPollLoop(
 		for agentName, agentCfg := range ghCfg.AgentConfigs {
 			allowed := allowedRepoSet(agentCfg.AllowedRepos)
 			for _, rk := range repos {
+				repoKey := rk.owner + "/" + rk.name
 				// AllowedRepos enforcement: empty list = all configured repos
 				// (default). Non-empty list = strict allow-list. Validated at
 				// LoadConfig time so we never see an entry outside ghCfg.Repos.
 				if allowed != nil {
-					if _, ok := allowed[rk.owner+"/"+rk.name]; !ok {
+					if _, ok := allowed[repoKey]; !ok {
 						continue
 					}
 				}
-				disc := newDiscoverer(ghCfg.Token, rk.owner, rk.name, d.logger)
+				disc := discoverers[repoKey+"|"+agentName]
 				issues, err := disc.FetchOpenIssues(ctx, "agent:"+agentName)
 				if err != nil {
 					d.logger.Error("github fetch failed",
@@ -3347,7 +3367,7 @@ func (d *Daemon) githubPollLoop(
 						return ctx.Err()
 					}
 
-					rpt := newReporter(ghCfg.Token, rk.owner, rk.name, ghCfg.CommentMaxChars, d.logger)
+					rpt := reporters[repoKey]
 					ag := ghCfg.AgentConfigs[agentName]
 					agentLabel := "agent:" + agentName
 					issueID := iss.ID
