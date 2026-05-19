@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
@@ -40,21 +41,43 @@ func BuildPrompt(task Task, provider string) string {
 
 // buildGitHubPrompt constructs a prompt for GitHub Issues mode.
 // In this mode there is no Multica backend — the agent uses `gh` CLI
-// and git/github directly.
+// and git/github directly. The working directory starts EMPTY, so the
+// prompt must instruct the agent to clone the repo before reading any
+// source files.
 func buildGitHubPrompt(task Task) string {
 	var b strings.Builder
 	b.WriteString("You are running as a local coding agent in GitHub Issues mode.\n")
 	b.WriteString("There is NO Multica backend — do NOT use `multica` CLI commands.\n\n")
 	fmt.Fprintf(&b, "Issue: %s (%s)\n\n", task.IssueID, task.GitHubIssueURL)
 	b.WriteString("Workflow:\n")
-	fmt.Fprintf(&b, "1. Run `gh issue view %s --comments` to read the issue and any existing comments.\n", task.GitHubIssueURL)
-	b.WriteString("2. Read the repo's CLAUDE.md, AGENTS.md, and relevant source files to understand the codebase.\n")
-	b.WriteString("3. Complete the task described in the issue — implement the fix or feature.\n")
-	fmt.Fprintf(&b, "4. Create a Pull Request: `gh pr create --title \"...\" --body \"Closes %s\"`\n", task.GitHubIssueURL)
-	b.WriteString("5. Post a summary comment on the issue with what you did.\n")
-	b.WriteString("6. If you cannot complete the task, post a comment explaining why.\n\n")
-	b.WriteString("Important: run `gh auth status` first to verify you can access the repo.\n")
+	b.WriteString("1. Run `gh auth status` first to verify you can access the repo.\n")
+	slug := parseGitHubRepoSlug(task.GitHubIssueURL)
+	if slug != "" {
+		fmt.Fprintf(&b, "2. Clone the repository into the current (empty) working directory: `gh repo clone %s .` (do NOT clone into a subdirectory).\n", slug)
+	} else {
+		b.WriteString("2. Clone the repository derived from the issue URL into the current (empty) working directory using `gh repo clone <owner>/<repo> .` (do NOT clone into a subdirectory).\n")
+	}
+	fmt.Fprintf(&b, "3. Run `gh issue view %s --comments` to read the issue and any existing comments.\n", task.GitHubIssueURL)
+	b.WriteString("4. Read the repo's CLAUDE.md, AGENTS.md, and relevant source files to understand the codebase.\n")
+	b.WriteString("5. Complete the task described in the issue — implement the fix or feature on a new branch.\n")
+	fmt.Fprintf(&b, "6. Create a Pull Request: `gh pr create --title \"...\" --body \"Closes %s\"`\n", task.GitHubIssueURL)
+	b.WriteString("7. Post a summary comment on the issue with what you did.\n")
+	b.WriteString("8. If you cannot complete the task, post a comment explaining why.\n")
 	return b.String()
+}
+
+// parseGitHubRepoSlug extracts "owner/repo" from an issue URL like
+// https://github.com/owner/repo/issues/42. Returns "" on parse failure.
+func parseGitHubRepoSlug(issueURL string) string {
+	u, err := url.Parse(issueURL)
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[0] + "/" + parts[1]
 }
 
 // buildQuickCreatePrompt constructs a prompt for quick-create tasks. The

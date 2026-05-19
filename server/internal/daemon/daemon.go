@@ -66,6 +66,7 @@ type GitHubDiscoverer interface {
 type GitHubReporter interface {
 	ReportResult(ctx context.Context, issueNumber int, output string, success bool) error
 	PostClaimComment(ctx context.Context, issueNumber int, agentName string) error
+	RemoveLabel(ctx context.Context, issueNumber int, label string) error
 }
 
 var (
@@ -140,6 +141,7 @@ type Daemon struct {
 	updating      atomic.Bool        // prevents concurrent update attempts
 	activeTasks      atomic.Int64       // number of tasks currently in handleTask; exposed via /health
 	reportToBackend  bool               // false skips backend progress/message reporting (e.g. GitHub mode)
+	ghInFlight       sync.Map           // GitHub mode: int64 issue ID -> struct{}; blocks intra-daemon duplicate pickup
 
 	// claimMu guards pauseClaims and claimsInFlight. It is held only for the
 	// microseconds it takes to make a decision; ClaimTask itself runs without
@@ -3312,6 +3314,16 @@ func (d *Daemon) githubPollLoop(
 				}
 
 				for _, iss := range filtered {
+					// In-flight gate: a single daemon must not spawn a second
+					// concurrent run on an issue it's already processing. The
+					// label-removal step below stops re-pickup on the next poll;
+					// this map closes the race within a single poll's window.
+					if _, loaded := d.ghInFlight.LoadOrStore(iss.ID, struct{}{}); loaded {
+						d.logger.Debug("github issue already in-flight, skipping",
+							"issue", iss.Number, "repo", rk.owner+"/"+rk.name)
+						continue
+					}
+
 					task := mapIssueToTask(iss, agentName, ghCfg, cfgDir)
 					task.RuntimeID = "gh/" + agentName
 					task.WorkspaceID = "github/" + rk.owner + "/" + rk.name
@@ -3322,14 +3334,20 @@ func (d *Daemon) githubPollLoop(
 					select {
 					case slot = <-sem:
 					case <-ctx.Done():
+						d.ghInFlight.Delete(iss.ID)
 						return ctx.Err()
 					}
 
 					rpt := newReporter(ghCfg.Token, rk.owner, rk.name, ghCfg.CommentMaxChars, d.logger)
 					ag := ghCfg.AgentConfigs[agentName]
+					agentLabel := "agent:" + agentName
+					issueID := iss.ID
 
 					go func(t Task, issNum int, rpt GitHubReporter, sl int, provider string) {
-						defer func() { sem <- sl }()
+						defer func() {
+							sem <- sl
+							d.ghInFlight.Delete(issueID)
+						}()
 
 						// Post a "working on this" comment to signal claim.
 						if err := rpt.PostClaimComment(ctx, issNum, agentName); err != nil {
@@ -3348,16 +3366,25 @@ func (d *Daemon) githubPollLoop(
 							if rptErr := rpt.ReportResult(ctx, issNum, err.Error(), false); rptErr != nil {
 								d.logger.Warn("github report failure failed", "issue", issNum, "error", rptErr)
 							}
-							return
+						} else {
+							success := result.Status == "completed"
+							output := result.Comment
+							if output == "" {
+								output = result.Status
+							}
+							if err := rpt.ReportResult(ctx, issNum, output, success); err != nil {
+								d.logger.Warn("github report result failed", "issue", issNum, "error", err)
+							}
 						}
 
-						success := result.Status == "completed"
-						output := result.Comment
-						if output == "" {
-							output = result.Status
-						}
-						if err := rpt.ReportResult(ctx, issNum, output, success); err != nil {
-							d.logger.Warn("github report result failed", "issue", issNum, "error", err)
+						// Always remove the agent label after a run terminates
+						// (success or failure). The label is the trigger; it is
+						// "consumed" once the agent has reported. Re-trigger by
+						// re-adding the label. This prevents the next poll from
+						// picking up the same issue on a tight loop.
+						if rmErr := rpt.RemoveLabel(ctx, issNum, agentLabel); rmErr != nil {
+							d.logger.Warn("github remove label failed",
+								"issue", issNum, "label", agentLabel, "error", rmErr)
 						}
 					}(task, iss.Number, rpt, slot, ag.Provider)
 				}

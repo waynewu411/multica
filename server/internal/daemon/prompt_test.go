@@ -218,3 +218,63 @@ func TestBuildPromptNonSquadLeaderNoRule(t *testing.T) {
 		t.Errorf("buildCommentPrompt must NOT inject squad leader no_action rule for non-squad-leader agents, got:\n%s", out)
 	}
 }
+
+// TestBuildGitHubPromptContainsCloneStep verifies the GitHub-mode prompt
+// explicitly instructs the agent to clone the repo before reading source
+// files. The agent's working directory starts empty (see execenv.Prepare),
+// so without this step the agent would try to read non-existent files.
+func TestBuildGitHubPromptContainsCloneStep(t *testing.T) {
+	task := Task{
+		IssueID:        "MUL-42",
+		GitHubIssueURL: "https://github.com/waynewu411/multica/issues/42",
+	}
+	got := BuildPrompt(task, "claude")
+
+	mustContain := []string{
+		"GitHub Issues mode",
+		"do NOT use `multica` CLI commands",
+		"gh auth status",
+		"gh repo clone waynewu411/multica .",
+		"gh issue view https://github.com/waynewu411/multica/issues/42 --comments",
+		"gh pr create",
+		"Closes https://github.com/waynewu411/multica/issues/42",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(got, s) {
+			t.Errorf("prompt missing %q\nprompt:\n%s", s, got)
+		}
+	}
+}
+
+// TestBuildGitHubPromptFallsBackWhenURLUnparsable covers the defensive path
+// where parseGitHubRepoSlug cannot extract owner/repo. The prompt must still
+// tell the agent to clone, just with a placeholder instead of a concrete slug.
+func TestBuildGitHubPromptFallsBackWhenURLUnparsable(t *testing.T) {
+	task := Task{
+		IssueID:        "MUL-1",
+		GitHubIssueURL: "not-a-url",
+	}
+	got := BuildPrompt(task, "claude")
+	if !strings.Contains(got, "<owner>/<repo>") {
+		t.Errorf("prompt should fall back to placeholder when slug unparsable\nprompt:\n%s", got)
+	}
+}
+
+func TestParseGitHubRepoSlug(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"https://github.com/owner/repo/issues/1", "owner/repo"},
+		{"https://github.com/waynewu411/multica/issues/42", "waynewu411/multica"},
+		{"https://github.com/owner/repo", "owner/repo"},
+		{"not-a-url", ""},
+		{"", ""},
+		{"https://github.com/onlyone", ""},
+	}
+	for _, tt := range tests {
+		if got := parseGitHubRepoSlug(tt.in); got != tt.want {
+			t.Errorf("parseGitHubRepoSlug(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}

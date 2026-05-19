@@ -952,6 +952,10 @@ func (a *ghReporterAdapter) PostClaimComment(ctx context.Context, issueNumber in
 	return a.rep.PostClaimComment(ctx, issueNumber, agentName)
 }
 
+func (a *ghReporterAdapter) RemoveLabel(ctx context.Context, issueNumber int, label string) error {
+	return a.rep.RemoveLabel(ctx, issueNumber, label)
+}
+
 // ghIssuesToDaemon converts a slice of github.Issue to daemon.GitHubIssue.
 func ghIssuesToDaemon(issues []github.Issue) []daemon.GitHubIssue {
 	result := make([]daemon.GitHubIssue, len(issues))

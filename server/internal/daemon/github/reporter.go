@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -49,6 +50,37 @@ func (r *Reporter) ReportResult(ctx context.Context, issueNumber int, output str
 func (r *Reporter) PostClaimComment(ctx context.Context, issueNumber int, agentName string) error {
 	body := fmt.Sprintf("%s is working on this...", agentName)
 	return r.postComment(ctx, issueNumber, body)
+}
+
+// RemoveLabel removes a single label from the issue. A 404 from GitHub is
+// treated as success — the label was already removed (e.g., by a concurrent
+// daemon racing on the same issue, or by a human cleaning up).
+func (r *Reporter) RemoveLabel(ctx context.Context, issueNumber int, label string) error {
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/labels/%s",
+		r.owner, r.repo, issueNumber, url.PathEscape(label))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, apiURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+r.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("remove label: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 // CloseIssue closes the GitHub issue.
