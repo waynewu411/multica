@@ -60,7 +60,16 @@ func buildGitHubPrompt(task Task) string {
 	fmt.Fprintf(&b, "3. Run `gh issue view %s --comments` to read the issue and any existing comments.\n", task.GitHubIssueURL)
 	b.WriteString("4. Read the repo's CLAUDE.md, AGENTS.md, and relevant source files to understand the codebase.\n")
 	b.WriteString("5. Complete the task described in the issue — implement the fix or feature on a new branch.\n")
-	fmt.Fprintf(&b, "6. Create a Pull Request: `gh pr create --title \"...\" --body \"Closes %s\"`\n", task.GitHubIssueURL)
+	// Pin `gh pr create --repo <slug>` so the PR lands in the same repo the
+	// issue came from. gh's default behavior when run inside a fork checkout
+	// is to open the PR against the upstream parent repo, which is almost
+	// never what an agent operating on a fork wants and which usually fails
+	// the agent's permission check anyway.
+	if slug != "" {
+		fmt.Fprintf(&b, "6. Create a Pull Request explicitly targeting the same repo the issue is on: `gh pr create --repo %s --title \"...\" --body \"Closes %s\"`. Do NOT omit `--repo` — gh defaults to the upstream parent on a fork checkout, which is not where this issue lives.\n", slug, task.GitHubIssueURL)
+	} else {
+		fmt.Fprintf(&b, "6. Create a Pull Request explicitly targeting the same repo as the issue: `gh pr create --repo <owner>/<repo> --title \"...\" --body \"Closes %s\"`. Do NOT omit `--repo` — gh defaults to the upstream parent on a fork checkout, which is not where this issue lives.\n", task.GitHubIssueURL)
+	}
 	b.WriteString("7. Post a summary comment on the issue with what you did.\n")
 	b.WriteString("8. If you cannot complete the task, post a comment explaining why.\n")
 	return b.String()

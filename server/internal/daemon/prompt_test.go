@@ -236,7 +236,9 @@ func TestBuildGitHubPromptContainsCloneStep(t *testing.T) {
 		"gh auth status",
 		"gh repo clone waynewu411/multica .",
 		"gh issue view https://github.com/waynewu411/multica/issues/42 --comments",
-		"gh pr create",
+		// PR creation must pin --repo to the same slug as the issue. gh's
+		// default on a fork checkout is the upstream parent — wrong target.
+		"gh pr create --repo waynewu411/multica",
 		"Closes https://github.com/waynewu411/multica/issues/42",
 	}
 	for _, s := range mustContain {
@@ -248,15 +250,22 @@ func TestBuildGitHubPromptContainsCloneStep(t *testing.T) {
 
 // TestBuildGitHubPromptFallsBackWhenURLUnparsable covers the defensive path
 // where parseGitHubRepoSlug cannot extract owner/repo. The prompt must still
-// tell the agent to clone, just with a placeholder instead of a concrete slug.
+// tell the agent to clone and to pin --repo on PR creation, just with a
+// placeholder instead of a concrete slug.
 func TestBuildGitHubPromptFallsBackWhenURLUnparsable(t *testing.T) {
 	task := Task{
 		IssueID:        "MUL-1",
 		GitHubIssueURL: "not-a-url",
 	}
 	got := BuildPrompt(task, "claude")
-	if !strings.Contains(got, "<owner>/<repo>") {
-		t.Errorf("prompt should fall back to placeholder when slug unparsable\nprompt:\n%s", got)
+	mustContain := []string{
+		"<owner>/<repo>",                          // clone fallback
+		"gh pr create --repo <owner>/<repo>",      // PR-target fallback (NOT bare `gh pr create`)
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(got, s) {
+			t.Errorf("prompt should contain %q on URL parse failure\nprompt:\n%s", s, got)
+		}
 	}
 }
 
