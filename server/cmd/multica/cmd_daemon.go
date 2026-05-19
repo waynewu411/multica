@@ -75,8 +75,9 @@ var daemonDiskUsageCmd = &cobra.Command{
 var daemonGithubCmd = &cobra.Command{
 	Use:   "github",
 	Short: "Run daemon in GitHub Issues mode (zero backend dependencies)",
-	Long:  "Starts the daemon that monitors GitHub Issues with agent labels and executes AI agents locally. No Multica backend required.",
-	RunE:  runDaemonGithub,
+	Long: "Starts the daemon that monitors GitHub Issues with agent labels and executes AI agents locally. No Multica backend required.\n" +
+		"Always runs in the foreground — use your shell, systemd, or another supervisor to run it as a background service.",
+	RunE: runDaemonGithub,
 }
 
 func init() {
@@ -122,7 +123,6 @@ func init() {
 	gf := daemonGithubCmd.Flags()
 	gf.String("config", "", "Path to config file (default: ~/.multica/config.yaml)")
 	gf.String("repo", "", "Override repos (comma-separated)")
-	gf.Bool("foreground", false, "Run in the foreground instead of background")
 
 	daemonCmd.AddCommand(daemonStartCmd)
 	daemonCmd.AddCommand(daemonStopCmd)
@@ -694,9 +694,6 @@ func runDaemonDiskUsage(cmd *cobra.Command, _ []string) error {
 // --- daemon github ---
 
 func runDaemonGithub(cmd *cobra.Command, _ []string) error {
-	foreground, _ := cmd.Flags().GetBool("foreground")
-	_ = foreground // GitHub mode always runs in foreground; flag exists for common-interface compatibility
-
 	// 1. Resolve config path (flag or default ~/.multica/config.yaml).
 	cfgPath, _ := cmd.Flags().GetString("config")
 	if cfgPath == "" {
