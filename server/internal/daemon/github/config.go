@@ -94,6 +94,23 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 
+	// Validate that every entry in AllowedRepos for every agent is also in
+	// the top-level repos list. An entry outside the configured set is
+	// almost certainly a typo, and silently ignoring it would weaken the
+	// security boundary AllowedRepos exists to enforce. Fail at startup
+	// rather than at first surprising poll.
+	repoSet := make(map[string]struct{}, len(raw.Repos))
+	for _, r := range raw.Repos {
+		repoSet[r] = struct{}{}
+	}
+	for name, ag := range raw.Agents {
+		for _, allowed := range ag.AllowedRepos {
+			if _, ok := repoSet[allowed]; !ok {
+				return nil, fmt.Errorf("agent %q: allowed_repos entry %q is not in the top-level repos list", name, allowed)
+			}
+		}
+	}
+
 	pollInterval, err := parseDuration(raw.Daemon.PollInterval, DefaultPollInterval)
 	if err != nil {
 		return nil, fmt.Errorf("daemon.poll_interval: %w", err)

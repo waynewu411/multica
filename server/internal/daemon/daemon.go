@@ -3296,8 +3296,17 @@ func (d *Daemon) githubPollLoop(
 			return ctx.Err()
 		}
 
-		for agentName := range ghCfg.AgentConfigs {
+		for agentName, agentCfg := range ghCfg.AgentConfigs {
+			allowed := allowedRepoSet(agentCfg.AllowedRepos)
 			for _, rk := range repos {
+				// AllowedRepos enforcement: empty list = all configured repos
+				// (default). Non-empty list = strict allow-list. Validated at
+				// LoadConfig time so we never see an entry outside ghCfg.Repos.
+				if allowed != nil {
+					if _, ok := allowed[rk.owner+"/"+rk.name]; !ok {
+						continue
+					}
+				}
 				disc := newDiscoverer(ghCfg.Token, rk.owner, rk.name, d.logger)
 				issues, err := disc.FetchOpenIssues(ctx, "agent:"+agentName)
 				if err != nil {
@@ -3397,4 +3406,19 @@ func (d *Daemon) githubPollLoop(
 		case <-time.After(ghCfg.PollInterval):
 		}
 	}
+}
+
+// allowedRepoSet builds a lookup set from an agent's AllowedRepos list.
+// Returns nil when the list is empty, signalling "no restriction" (all
+// daemon-configured repos are allowed). The non-nil zero-length case is
+// not reachable because Config validation rejects entries outside Repos.
+func allowedRepoSet(allowed []string) map[string]struct{} {
+	if len(allowed) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(allowed))
+	for _, r := range allowed {
+		out[r] = struct{}{}
+	}
+	return out
 }

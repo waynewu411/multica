@@ -3,6 +3,7 @@ package github
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -113,6 +114,64 @@ agents:
 	_, err := LoadConfig(configPath)
 	if err == nil {
 		t.Error("expected error for invalid agent name, got nil")
+	}
+}
+
+func TestLoadConfigRejectsAllowedRepoOutsideRepos(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+
+	content := `
+repos:
+  - owner/repo1
+
+agents:
+  claude-code:
+    provider: claude
+    allowed_repos:
+      - owner/repo1
+      - owner/repo2   # not in top-level repos — must fail
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GITHUB_TOKEN", "ghp_test123")
+	_, err := LoadConfig(configPath)
+	if err == nil {
+		t.Fatal("expected error for allowed_repos entry outside repos, got nil")
+	}
+	if !strings.Contains(err.Error(), "owner/repo2") {
+		t.Errorf("error %v does not mention the offending repo", err)
+	}
+}
+
+func TestLoadConfigAcceptsAllowedReposSubsetOfRepos(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+
+	content := `
+repos:
+  - owner/repo1
+  - owner/repo2
+
+agents:
+  claude-code:
+    provider: claude
+    allowed_repos:
+      - owner/repo1
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GITHUB_TOKEN", "ghp_test123")
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if got := cfg.Agents["claude-code"].AllowedRepos; len(got) != 1 || got[0] != "owner/repo1" {
+		t.Errorf("AllowedRepos = %v, want [owner/repo1]", got)
 	}
 }
 
