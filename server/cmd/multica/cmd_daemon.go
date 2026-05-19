@@ -952,7 +952,7 @@ func (a *ghReporterAdapter) PostClaimComment(ctx context.Context, issueNumber in
 	return a.rep.PostClaimComment(ctx, issueNumber, agentName)
 }
 
-func (a *ghReporterAdapter) RemoveLabel(ctx context.Context, issueNumber int, label string) error {
+func (a *ghReporterAdapter) RemoveLabel(ctx context.Context, issueNumber int, label string) (bool, error) {
 	return a.rep.RemoveLabel(ctx, issueNumber, label)
 }
 

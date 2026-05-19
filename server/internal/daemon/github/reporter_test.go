@@ -45,8 +45,12 @@ func TestRemoveLabel(t *testing.T) {
 		return srv.Client().Transport.RoundTrip(req)
 	})}
 
-	if err := r.RemoveLabel(context.Background(), 42, "agent:claude-code"); err != nil {
+	removed, err := r.RemoveLabel(context.Background(), 42, "agent:claude-code")
+	if err != nil {
 		t.Fatalf("RemoveLabel returned error: %v", err)
+	}
+	if !removed {
+		t.Error("removed = false on HTTP 200, want true")
 	}
 
 	if m := gotMethod.Load().(string); m != http.MethodDelete {
@@ -61,7 +65,7 @@ func TestRemoveLabel(t *testing.T) {
 	}
 }
 
-func TestRemoveLabelNotFoundIsSuccess(t *testing.T) {
+func TestRemoveLabelNotFoundReportsNotClaimed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"message":"Label does not exist"}`)
@@ -80,8 +84,12 @@ func TestRemoveLabelNotFoundIsSuccess(t *testing.T) {
 		logger: slog.Default(),
 	}
 
-	if err := r.RemoveLabel(context.Background(), 42, "agent:claude-code"); err != nil {
+	removed, err := r.RemoveLabel(context.Background(), 42, "agent:claude-code")
+	if err != nil {
 		t.Fatalf("RemoveLabel returned error for 404, want nil: %v", err)
+	}
+	if removed {
+		t.Error("removed = true on HTTP 404, want false (lock not held)")
 	}
 }
 
@@ -104,9 +112,12 @@ func TestRemoveLabelServerErrorReturnsError(t *testing.T) {
 		logger: slog.Default(),
 	}
 
-	err := r.RemoveLabel(context.Background(), 42, "agent:claude-code")
+	removed, err := r.RemoveLabel(context.Background(), 42, "agent:claude-code")
 	if err == nil {
 		t.Fatal("RemoveLabel returned nil for 403, want error")
+	}
+	if removed {
+		t.Error("removed = true on error, want false")
 	}
 	if !strings.Contains(err.Error(), "403") {
 		t.Errorf("error = %v, want it to mention HTTP 403", err)

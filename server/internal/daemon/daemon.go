@@ -66,7 +66,11 @@ type GitHubDiscoverer interface {
 type GitHubReporter interface {
 	ReportResult(ctx context.Context, issueNumber int, output string, success bool) error
 	PostClaimComment(ctx context.Context, issueNumber int, agentName string) error
-	RemoveLabel(ctx context.Context, issueNumber int, label string) error
+	// RemoveLabel atomically deletes a label from an issue. Returns
+	// (removed=true, nil) when we held the lock, (removed=false, nil)
+	// when the label was already gone (another daemon won the race),
+	// or (false, err) on a real failure. See github.Reporter.RemoveLabel.
+	RemoveLabel(ctx context.Context, issueNumber int, label string) (removed bool, err error)
 }
 
 var (
@@ -3378,7 +3382,25 @@ func (d *Daemon) githubPollLoop(
 							d.ghInFlight.Delete(issueID)
 						}()
 
-						// Post a "working on this" comment to signal claim.
+						// Claim-first: atomically DELETE the agent label. If
+						// the API returns 200 we hold the lock; if 404 the
+						// label is gone (another daemon claimed it, a human
+						// removed it, or the label was never there). Either
+						// way, do not run the agent — running on a label we
+						// did not just remove invites duplicate work across
+						// daemons and across crash-restart cycles.
+						claimed, claimErr := rpt.RemoveLabel(ctx, issNum, agentLabel)
+						if claimErr != nil {
+							d.logger.Warn("github claim attempt failed", "issue", issNum, "label", agentLabel, "error", claimErr)
+							return
+						}
+						if !claimed {
+							d.logger.Info("github issue already claimed by another daemon, skipping", "issue", issNum, "label", agentLabel)
+							return
+						}
+
+						// Post a "working on this" comment AFTER claim so
+						// exactly one daemon advertises ownership.
 						if err := rpt.PostClaimComment(ctx, issNum, agentName); err != nil {
 							d.logger.Warn("github claim comment failed", "issue", issNum, "error", err)
 						}
@@ -3395,25 +3417,15 @@ func (d *Daemon) githubPollLoop(
 							if rptErr := rpt.ReportResult(ctx, issNum, err.Error(), false); rptErr != nil {
 								d.logger.Warn("github report failure failed", "issue", issNum, "error", rptErr)
 							}
-						} else {
-							success := result.Status == "completed"
-							output := result.Comment
-							if output == "" {
-								output = result.Status
-							}
-							if err := rpt.ReportResult(ctx, issNum, output, success); err != nil {
-								d.logger.Warn("github report result failed", "issue", issNum, "error", err)
-							}
+							return
 						}
-
-						// Always remove the agent label after a run terminates
-						// (success or failure). The label is the trigger; it is
-						// "consumed" once the agent has reported. Re-trigger by
-						// re-adding the label. This prevents the next poll from
-						// picking up the same issue on a tight loop.
-						if rmErr := rpt.RemoveLabel(ctx, issNum, agentLabel); rmErr != nil {
-							d.logger.Warn("github remove label failed",
-								"issue", issNum, "label", agentLabel, "error", rmErr)
+						success := result.Status == "completed"
+						output := result.Comment
+						if output == "" {
+							output = result.Status
+						}
+						if err := rpt.ReportResult(ctx, issNum, output, success); err != nil {
+							d.logger.Warn("github report result failed", "issue", issNum, "error", err)
 						}
 					}(task, iss.Number, rpt, slot, ag.Provider)
 				}

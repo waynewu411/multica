@@ -52,16 +52,23 @@ func (r *Reporter) PostClaimComment(ctx context.Context, issueNumber int, agentN
 	return r.postComment(ctx, issueNumber, body)
 }
 
-// RemoveLabel removes a single label from the issue. A 404 from GitHub is
-// treated as success — the label was already removed (e.g., by a concurrent
-// daemon racing on the same issue, or by a human cleaning up).
-func (r *Reporter) RemoveLabel(ctx context.Context, issueNumber int, label string) error {
+// RemoveLabel removes a single label from the issue. It returns
+// (removed, err):
+//   - removed=true,  err=nil  → we removed the label (HTTP 200).
+//   - removed=false, err=nil  → the label was already gone (HTTP 404).
+//     This happens when a concurrent daemon won a claim race, a human
+//     cleaned up, or the label was never on the issue. Callers that use
+//     RemoveLabel as a distributed claim lock MUST check `removed` and
+//     bail when it is false.
+//   - err != nil              → a real failure; the caller should retry
+//     or log and skip.
+func (r *Reporter) RemoveLabel(ctx context.Context, issueNumber int, label string) (bool, error) {
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/labels/%s",
 		r.owner, r.repo, issueNumber, url.PathEscape(label))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, apiURL, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	req.Header.Set("Authorization", "Bearer "+r.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -69,18 +76,18 @@ func (r *Reporter) RemoveLabel(ctx context.Context, issueNumber int, label strin
 
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil
+		return false, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("remove label: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return false, fmt.Errorf("remove label: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	return nil
+	return true, nil
 }
 
 // CloseIssue closes the GitHub issue.
