@@ -22,7 +22,7 @@ func MapIssueToTask(issue Issue, agentName string, cfg *Config, cfgDir string) d
 		Agent: &daemon.AgentData{
 			ID:           agentName,
 			Name:         agentName,
-			Instructions: resolveInstructions(issue.Body, agent.Instructions, agentName, cfgDir),
+			Instructions: resolveInstructions(agent.Instructions, agentName, cfgDir),
 		},
 		Repos: []daemon.RepoData{
 			{URL: issue.Repo.CloneURL},
@@ -49,12 +49,12 @@ func NewReportTask(task daemon.Task, owner, repo string, number int) ReportTask 
 	}
 }
 
-func resolveInstructions(issueBody, configInstr, agentName, cfgDir string) string {
-	// Issue body <!-- agent:instructions ... --> takes highest priority.
-	if instr := extractIssueInstructions(issueBody); instr != "" {
-		return instr
-	}
-	// Fall back to config-level instructions.
+// resolveInstructions picks the agent persona from trusted sources only.
+// Issue bodies are untrusted input (anyone with issue write access can edit
+// them) and must NEVER be promoted into the instruction layer — that would
+// be a prompt-injection vector. Issue content reaches the agent as task
+// data through `gh issue view`, not as instructions.
+func resolveInstructions(configInstr, agentName, cfgDir string) string {
 	if configInstr != "" {
 		return configInstr
 	}
@@ -65,21 +65,6 @@ func resolveInstructions(issueBody, configInstr, agentName, cfgDir string) strin
 		return fmt.Sprintf("See %s for full agent persona.", path)
 	}
 	return ""
-}
-
-func extractIssueInstructions(body string) string {
-	const start = "<!-- agent:instructions"
-	const end = "-->"
-	s := strings.Index(body, start)
-	if s < 0 {
-		return ""
-	}
-	s += len(start)
-	e := strings.Index(body[s:], end)
-	if e < 0 {
-		return ""
-	}
-	return strings.TrimSpace(body[s : s+e])
 }
 
 func repoToPrefix(repo string) string {
