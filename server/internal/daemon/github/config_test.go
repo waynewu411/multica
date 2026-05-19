@@ -206,15 +206,32 @@ agents:
 	}
 }
 
-func TestPollIntervalForRepos(t *testing.T) {
-	// 1 repo @ 30s → stays at 30s
-	if got := pollIntervalForRepos(1, 30*time.Second); got != 30*time.Second {
-		t.Errorf("1 repo: got %v, want 30s", got)
+func TestPollIntervalForAgentsRepos(t *testing.T) {
+	tests := []struct {
+		name     string
+		agents   int
+		repos    int
+		cfg      time.Duration
+		want     time.Duration
+	}{
+		// Small deployments stay at the configured interval.
+		{"1 agent, 1 repo", 1, 1, 30 * time.Second, 30 * time.Second},
+		{"2 agents, 5 repos under floor", 2, 5, 30 * time.Second, 30 * time.Second},
+		// Big fan-out pushes the floor up. 3 agents × 20 repos × 1 page = 60 cycle reqs
+		// against 4000 req/h budget → minInterval = 60h/4000 = 54s.
+		{"3 agents, 20 repos forces floor", 3, 20, 30 * time.Second, 60 * time.Hour / 4000},
+		// User asked for a slower interval than the floor — honor the slower one.
+		{"slow configured wins", 2, 5, 5 * time.Minute, 5 * time.Minute},
+		// Degenerate inputs fall back to configured.
+		{"zero agents", 0, 5, 30 * time.Second, 30 * time.Second},
+		{"zero repos", 2, 0, 30 * time.Second, 30 * time.Second},
 	}
-	// 50 repos: min = 50 * 3600 / 4000 = 45s, so 30s → 45s
-	want := 50 * time.Hour / 4000
-	if got := pollIntervalForRepos(50, 30*time.Second); got != want {
-		t.Errorf("50 repos: got %v, want %v", got, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pollIntervalForAgentsRepos(tt.agents, tt.repos, tt.cfg); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

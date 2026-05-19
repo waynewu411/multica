@@ -131,8 +131,10 @@ func LoadConfig(path string) (*Config, error) {
 		commentMax = DefaultCommentMax
 	}
 
-	// Compute effective poll interval based on repo count and rate limit safety.
-	effectivePoll := pollIntervalForRepos(len(raw.Repos), pollInterval)
+	// Compute effective poll interval based on (agents × repos) fan-out and
+	// rate limit safety. Each poll cycle issues one request per (agent, repo)
+	// pair, not just one per repo.
+	effectivePoll := pollIntervalForAgentsRepos(len(raw.Agents), len(raw.Repos), pollInterval)
 
 	return &Config{
 		Token:  token,
@@ -152,13 +154,26 @@ func AgentInstructionPath(cfgDir, agentName string) string {
 	return filepath.Join(cfgDir, "agents", agentName, "AGENTS.md")
 }
 
-// pollIntervalForRepos ensures poll rate stays within 80% of GitHub's 5000 req/h limit.
-func pollIntervalForRepos(numRepos int, configured time.Duration) time.Duration {
+// pollIntervalForAgentsRepos ensures poll rate stays within 80% of GitHub's
+// 5000 req/h limit by accounting for the (agents × repos) fan-out per cycle.
+//
+// Each poll cycle issues one request per (agent, repo) pair. A conservative
+// pagesBudget of 1 covers the common case (repos with <100 labeled open
+// issues); repos that page deeper will measure their actual cost via the
+// "X-RateLimit-Remaining < 100" warning emitted from Discoverer.
+//
+// Returns the larger of `configured` and the rate-limit floor — never
+// shortens the user's chosen interval.
+func pollIntervalForAgentsRepos(numAgents, numRepos int, configured time.Duration) time.Duration {
 	const maxReqPerHour = 4000 // 80% of 5000
-	// Each poll cycle does one request per repo.
-	minInterval := time.Duration(numRepos) * time.Hour / time.Duration(maxReqPerHour)
+	const pagesBudget = 1
+	requestsPerCycle := numAgents * numRepos * pagesBudget
+	if requestsPerCycle <= 0 {
+		return configured
+	}
+	minInterval := time.Duration(requestsPerCycle) * time.Hour / time.Duration(maxReqPerHour)
 	if minInterval < configured {
-		minInterval = configured
+		return configured
 	}
 	return minInterval
 }
