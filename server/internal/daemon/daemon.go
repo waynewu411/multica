@@ -3410,8 +3410,15 @@ func (d *Daemon) githubPollLoop(
 						// lifecycle calls (StartTask/CompleteTask) which are not
 						// available in GitHub mode. The core execution
 						// (d.runner.run -> runTask) is unchanged.
+						//
+						// Orphan timeout: bound the run by ghCfg.OrphanTimeout
+						// so a wedged agent CLI cannot hold the in-flight slot
+						// forever. ctx.Done() still cancels first on daemon
+						// shutdown.
+						runCtx, cancelRun := context.WithTimeout(ctx, ghCfg.OrphanTimeout)
 						taskLog := d.logger.With("task", shortID(t.ID))
-						result, err := d.runner.run(ctx, t, provider, sl, taskLog)
+						result, err := d.runner.run(runCtx, t, provider, sl, taskLog)
+						cancelRun()
 						if err != nil {
 							d.logger.Error("github task execution failed", "issue", issNum, "error", err)
 							if rptErr := rpt.ReportResult(ctx, issNum, err.Error(), false); rptErr != nil {
